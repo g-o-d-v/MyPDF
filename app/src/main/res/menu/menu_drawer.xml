@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:title="常规">
+        <menu>
+            <item android:id="@+id/nav_recent" android:icon="@android:drawable/ic_menu_recent_history" android:title="最近查看" />
+            <item android:id="@+id/nav_favorites" android:icon="@android:drawable/btn_star" android:title="收藏" />
+            <item android:id="@+id/nav_settings" android:icon="@android:drawable/ic_menu_preferences" android:title="设置" />
+        </menu>
+    </item>
+    <item android:title="工具">
+        <menu>
+            <item android:id="@+id/nav_create_pdf" android:icon="@android:drawable/ic_menu_add" android:title="创建 PDF" />
+            <item android:id="@+id/nav_convert_from" android:title="从 PDF 转换" />
+            <item android:id="@+id/nav_convert_to" android:title="转换为 PDF" />
+            <item android:id="@+id/nav_manage_pages" android:icon="@android:drawable/ic_menu_manage" android:title="管理 PDF 页面" />
+            <item android:id="@+id/nav_security" android:icon="@android:drawable/ic_lock_idle_lock" android:title="安全 PDF" />
+        </menu>
+    </item>
+</menu>

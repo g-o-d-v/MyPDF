@@ -1,0 +1,6 @@
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+plugins {
+    // 这里声明全局的 Android 插件版本，apply false 表示当前顶层项目不直接应用，由子模块（如 :app）去具体应用
+    id 'com.android.application' version '8.2.0' apply false
+    id 'com.android.library' version '8.2.0' apply false
+}
