@@ -1,6 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
-    <item android:id="@+id/action_search" android:icon="@android:drawable/ic_menu_search" android:title="搜索" app:showAsAction="ifRoom" />
-    <item android:id="@+id/action_switch_layout" android:icon="@android:drawable/ic_menu_sort_by_size" android:title="显示样式" app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/action_search"
+        android:icon="@android:drawable/ic_menu_search"
+        android:title="搜索"
+        app:showAsAction="ifRoom" />
+
+    <item
+        android:id="@+id/action_switch_layout"
+        android:icon="@drawable/ic_view_grid"
+        android:title="显示样式"
+        app:showAsAction="ifRoom" />
 </menu>

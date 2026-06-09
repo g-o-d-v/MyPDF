@@ -14,8 +14,8 @@
         android:text="/storage/emulated/0/Documents/"
         android:textColor="#888888"
         android:textSize="12sp"
-        android:maxLines="1"
-        android:ellipsize="middle"/>
+        android:maxLines="3"
+        android:ellipsize="end"/>
 
     <LinearLayout
         android:layout_width="match_parent"
