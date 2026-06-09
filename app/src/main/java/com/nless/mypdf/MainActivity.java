@@ -15,7 +15,9 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.documentfile.provider.DocumentFile;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -24,21 +26,43 @@ import java.util.function.Consumer;
 
 public class MainActivity extends AppCompatActivity {
 
+    public static final int MODE_HOME = 0;
+    public static final int MODE_FOLDER = 1;
+    public static final int MODE_RECENT = 2;
+    public static final int MODE_SEARCH = 3;
+
+    private int currentMode = MODE_HOME;
+    private int preSearchMode = MODE_HOME;
+
     private MainUIManager uiManager;
     private PdfDbHelper dbHelper;
-    private boolean isHomeScreen = true; // 用于区分当前是主页还是文件夹详情页
 
     private final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.getDefault());
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
 
-    // 1. 单文件选择
+    public int getCurrentMode() {
+        return currentMode;
+    }
+
+    public static String cleanPath(String rawPath) {
+        if (rawPath == null) return "";
+        try {
+            rawPath = java.net.URLDecoder.decode(rawPath, "UTF-8");
+        } catch (Exception e) {
+            // 降级
+        }
+        if (rawPath.contains(":")) {
+            return rawPath.substring(rawPath.lastIndexOf(":") + 1);
+        }
+        return rawPath;
+    }
+
     private final ActivityResultLauncher<Intent> filePickerLauncher = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
             result -> {
                 if (result.getResultCode() == RESULT_OK && result.getData() != null) {
                     Uri uri = result.getData().getData();
-                    if (uri != null && isHomeScreen) {
-                        // 查重拦截
+                    if (uri != null && currentMode == MODE_HOME) {
                         if (dbHelper.exists(uri.toString())) {
                             Toast.makeText(this, "该文件已在首页列表中", Toast.LENGTH_SHORT).show();
                             return;
@@ -47,9 +71,10 @@ public class MainActivity extends AppCompatActivity {
                         if (documentFile != null && documentFile.exists()) {
                             String name = documentFile.getName();
                             String time = dateFormat.format(new Date(documentFile.lastModified()));
-                            PdfItem item = new PdfItem(uri, name != null ? name : "未命名.pdf", uri.getPath(), time, false);
+                            String displayPath = cleanPath(uri.getPath());
 
-                            dbHelper.insertItem(item); // 存入数据库
+                            PdfItem item = new PdfItem(uri, name != null ? name : "未命名.pdf", displayPath, time, false);
+                            dbHelper.insertItem(item);
                             uiManager.addPdfItem(item);
                         }
                     }
@@ -57,19 +82,16 @@ public class MainActivity extends AppCompatActivity {
             }
     );
 
-    // 2. 文件夹选择
     private final ActivityResultLauncher<Intent> folderPickerLauncher = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
             result -> {
                 if (result.getResultCode() == RESULT_OK && result.getData() != null) {
                     Uri treeUri = result.getData().getData();
-                    if (treeUri != null && isHomeScreen) {
-                        // 查重拦截
+                    if (treeUri != null && currentMode == MODE_HOME) {
                         if (dbHelper.exists(treeUri.toString())) {
                             Toast.makeText(this, "该文件夹已在首页列表中", Toast.LENGTH_SHORT).show();
                             return;
                         }
-
                         getContentResolver().takePersistableUriPermission(treeUri,
                                 Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
 
@@ -90,10 +112,11 @@ public class MainActivity extends AppCompatActivity {
 
                                 if (hasDirectPdf) {
                                     String name = documentFile.getName();
-                                    PdfItem item = new PdfItem(treeUri, name != null ? name : "未命名文件夹", treeUri.getPath(), "", true);
+                                    String displayPath = cleanPath(treeUri.getPath());
+                                    PdfItem item = new PdfItem(treeUri, name != null ? name : "未命名文件夹", displayPath, "", true);
 
                                     runOnUiThread(() -> {
-                                        dbHelper.insertItem(item); // 存入数据库
+                                        dbHelper.insertItem(item);
                                         uiManager.addPdfItem(item);
                                     });
                                 } else {
@@ -114,114 +137,271 @@ public class MainActivity extends AppCompatActivity {
 
         uiManager = new MainUIManager(this);
         uiManager.setupUI();
+        dbHelper = new PdfDbHelper(this);
 
-        String folderUriStr = getIntent().getStringExtra("folder_uri");
-        isHomeScreen = (folderUriStr == null);
+        loadHomeData();
 
-        if (isHomeScreen) {
-            // 是主页：初始化数据库，读取并展示保存的内容
-            dbHelper = new PdfDbHelper(this);
-            List<PdfItem> savedItems = dbHelper.getAllItems();
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (uiManager.closeDrawerIfOpen()) {
+                    return;
+                }
+                if (currentMode != MODE_HOME) {
+                    exitSubView();
+                } else {
+                    this.setEnabled(false);
+                    getOnBackPressedDispatcher().onBackPressed();
+                    this.setEnabled(true);
+                }
+            }
+        });
+    }
+
+    public void loadHomeData() {
+        currentMode = MODE_HOME;
+        uiManager.clearList();
+        uiManager.setShowPath(true);
+        uiManager.setRecentMode(false);
+        List<PdfItem> savedItems = dbHelper.getAllItems();
+        if (savedItems.isEmpty()) {
+            uiManager.showEmptyStateByMode();
+        } else {
             for (PdfItem item : savedItems) {
                 uiManager.addPdfItem(item);
             }
-        } else {
-            // 是文件夹详情页：不读数据库，动态加载里面的内容
-            String folderName = getIntent().getStringExtra("folder_name");
-            uiManager.setupAsFolderView(folderName != null ? folderName : "文件夹");
-            loadFolderContents(Uri.parse(folderUriStr));
         }
-
-        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
-            @Override
-            public void handleOnBackPressed() {
-                if (!uiManager.closeDrawerIfOpen()) {
-                    this.setEnabled(false);
-                    getOnBackPressedDispatcher().onBackPressed();
-                }
-            }
-        });
     }
 
-    // 原位无缝切换到文件夹详情，不再重启 Activity
-    public void switchToFolderView(PdfItem folderItem) {
-        // 1. 改变 UI 状态为文件夹模式
-        isHomeScreen = false;
+    public void exitSubView() {
+        if (currentMode == MODE_SEARCH) {
+            exitSearchMode();
+        } else {
+            uiManager.clearList();
+            uiManager.setupAsHomeView();
+            loadHomeData();
+        }
+    }
+
+    public void enterSearchMode() {
+        if (currentMode != MODE_SEARCH) {
+            preSearchMode = currentMode;
+            currentMode = MODE_SEARCH;
+        }
+    }
+
+    public void exitSearchMode() {
         uiManager.clearList();
-        uiManager.setupAsFolderView(folderItem.name);
-
-        // 2. 异步加载文件夹内部文件（加载不影响用户操作）
-        loadFolderContents(folderItem.uri);
-
-        // 3. 拦截物理返回键，使其效果变为“退回首页”而不是退出应用
-        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
-            @Override
-            public void handleOnBackPressed() {
-                isHomeScreen = true;
-                uiManager.clearList();
-                uiManager.setupAsHomeView(); // 恢复汉堡菜单和加号
-
-                // 重新读取数据库加载首页收藏
-                List<PdfItem> savedItems = dbHelper.getAllItems();
-                for (PdfItem item : savedItems) {
-                    uiManager.addPdfItem(item);
-                }
-
-                // 销毁当前拦截器，下一次按返回键就正常退出了
-                this.setEnabled(false);
-            }
-        });
+        if (preSearchMode == MODE_RECENT) {
+            loadRecentData();
+        } else {
+            uiManager.setupAsHomeView();
+            loadHomeData();
+        }
     }
 
-    private void loadFolderContents(Uri folderUri) {
+    private void loadFolderContents(Uri folderUri, String folderName) {
         executorService.execute(() -> {
             DocumentFile folder = DocumentFile.fromTreeUri(this, folderUri);
             if (folder != null && folder.exists() && folder.isDirectory()) {
-                for (DocumentFile file : folder.listFiles()) {
+                DocumentFile[] files = folder.listFiles();
+                if (files == null || files.length == 0) {
+                    runOnUiThread(() -> uiManager.showEmptyStateByMode());
+                    return;
+                }
+                boolean addedAny = false;
+                for (DocumentFile file : files) {
                     if (!file.isDirectory()) {
                         boolean isPdf = "application/pdf".equals(file.getType()) ||
                                 (file.getName() != null && file.getName().toLowerCase().endsWith(".pdf"));
                         if (isPdf) {
                             String name = file.getName();
                             String time = dateFormat.format(new Date(file.lastModified()));
-                            PdfItem item = new PdfItem(file.getUri(), name != null ? name : "未知文件", "", time, false);
+                            // 🌟 核心修复：不再手动拼接路径，而是从系统 URI 中提取该文件的真实物理路径
+                            String realPath = cleanPath(file.getUri().getPath());
+                            PdfItem item = new PdfItem(file.getUri(), name != null ? name : "未知文件", realPath, time, false);
                             runOnUiThread(() -> uiManager.addPdfItem(item));
+                            addedAny = true;
                         }
                     }
                 }
+                if (!addedAny) runOnUiThread(() -> uiManager.showEmptyStateByMode());
+            } else {
+                runOnUiThread(() -> uiManager.showEmptyStateByMode());
             }
         });
     }
 
-    // 核心暴露给 UI：移除（仅清除数据库和列表，不删源文件）
+    public void switchToFolderView(PdfItem folderItem) {
+        currentMode = MODE_FOLDER;
+        uiManager.clearList();
+        uiManager.setShowPath(false);
+        uiManager.setRecentMode(false);
+        uiManager.setupAsSubView(folderItem.name);
+        loadFolderContents(folderItem.uri, folderItem.name);
+    }
+
+    public void loadRecentData() {
+        currentMode = MODE_RECENT;
+        uiManager.clearList();
+        uiManager.setShowPath(true);
+        uiManager.setRecentMode(true);
+        uiManager.setupAsSubView("最近查看");
+
+        List<PdfItem> recentItems = dbHelper.getRecentItems();
+        if (recentItems.isEmpty()) {
+            uiManager.showEmptyStateByMode();
+        } else {
+            for (PdfItem item : recentItems) {
+                uiManager.addPdfItem(item);
+            }
+        }
+    }
+
+    public void recordViewHistory(PdfItem item) {
+        if (dbHelper != null && !item.isFolder) {
+            executorService.execute(() -> dbHelper.recordViewHistory(item));
+        }
+    }
+
+    public void removeRecentRecord(PdfItem item) {
+        if (dbHelper != null) {
+            executorService.execute(() -> {
+                dbHelper.deleteItem(item.uri.toString());
+                runOnUiThread(() -> {
+                    if (currentMode == MODE_RECENT) {
+                        loadRecentData();
+                    }
+                });
+            });
+        }
+    }
+
+    public void performSearch(String keyword) {
+        if (dbHelper == null || keyword.trim().isEmpty()) return;
+
+        if (currentMode == MODE_RECENT || (currentMode == MODE_SEARCH && preSearchMode == MODE_RECENT)) {
+            List<PdfItem> currentRecents = dbHelper.getRecentItems();
+            uiManager.clearList();
+            uiManager.showSearchingState();
+            currentMode = MODE_SEARCH;
+            uiManager.setupAsSubView("搜索历史结果: " + keyword);
+            uiManager.setShowPath(true);
+            uiManager.setRecentMode(false);
+
+            executorService.execute(() -> {
+                List<PdfItem> results = new ArrayList<>();
+                for (PdfItem item : currentRecents) {
+                    if (item.name.toLowerCase().contains(keyword.toLowerCase())) {
+                        results.add(item);
+                    }
+                }
+                runOnUiThread(() -> {
+                    uiManager.clearList();
+                    if (results.isEmpty()) {
+                        uiManager.showEmptyState("没有文件", false);
+                    } else {
+                        for (PdfItem item : results) uiManager.addPdfItem(item);
+                    }
+                });
+            });
+            return;
+        }
+
+        uiManager.clearList();
+        uiManager.showSearchingState();
+
+        if (currentMode != MODE_SEARCH) {
+            preSearchMode = currentMode;
+        }
+        currentMode = MODE_SEARCH;
+
+        uiManager.setupAsSubView("正在搜索...");
+        uiManager.setShowPath(true);
+        uiManager.setRecentMode(false);
+
+        executorService.execute(() -> {
+            String lowerKeyword = keyword.toLowerCase();
+            List<PdfItem> allHomeItems = dbHelper.getAllItems();
+            List<PdfItem> searchResults = new ArrayList<>();
+            HashSet<String> uniqueFileRegistry = new HashSet<>();
+
+            for (PdfItem item : allHomeItems) {
+                if (!item.isFolder) {
+                    if (item.name.toLowerCase().contains(lowerKeyword)) {
+                        String fileKey = item.name + "@" + item.path;
+                        if (!uniqueFileRegistry.contains(fileKey)) {
+                            uniqueFileRegistry.add(fileKey);
+                            searchResults.add(item);
+                        }
+                    }
+                } else {
+                    DocumentFile folder = DocumentFile.fromTreeUri(this, item.uri);
+                    if (folder != null && folder.exists()) {
+                        for (DocumentFile file : folder.listFiles()) {
+                            if (!file.isDirectory() && file.getName() != null) {
+                                boolean isPdf = "application/pdf".equals(file.getType()) || file.getName().toLowerCase().endsWith(".pdf");
+                                if (isPdf && file.getName().toLowerCase().contains(lowerKeyword)) {
+                                    String name = file.getName();
+                                    String time = dateFormat.format(new Date(file.lastModified()));
+                                    // 🌟 核心修复：搜索时同样使用系统真实的物理路径进行注册和比对
+                                    String realPath = cleanPath(file.getUri().getPath());
+
+                                    String fileKey = name + "@" + realPath;
+                                    if (!uniqueFileRegistry.contains(fileKey)) {
+                                        uniqueFileRegistry.add(fileKey);
+                                        PdfItem result = new PdfItem(file.getUri(), name, realPath, time, false);
+                                        searchResults.add(result);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            runOnUiThread(() -> {
+                uiManager.clearList();
+                uiManager.updateTitle("搜索结果 (" + searchResults.size() + "条)");
+
+                if (preSearchMode == MODE_HOME) {
+                    uiManager.showFab(true);
+                    if (searchResults.isEmpty()) {
+                        uiManager.showEmptyState("暂无文件，请点击添加", true);
+                    }
+                } else {
+                    if (searchResults.isEmpty()) {
+                        uiManager.showEmptyState("没有文件", false);
+                    }
+                }
+
+                for (PdfItem item : searchResults) {
+                    uiManager.addPdfItem(item);
+                }
+            });
+        });
+    }
+
     public void removePdfItemFromApp(PdfItem item) {
-        if (isHomeScreen && dbHelper != null) {
+        if (currentMode == MODE_HOME && dbHelper != null) {
             dbHelper.deleteItem(item.uri.toString());
         }
     }
 
-    // 核心暴露给 UI：物理彻底删除
     public void deleteFilePhysically(PdfItem item, Consumer<Boolean> callback) {
         executorService.execute(() -> {
             boolean success = false;
             try {
-                DocumentFile docFile;
-                if (item.isFolder) {
-                    docFile = DocumentFile.fromTreeUri(this, item.uri);
-                } else {
-                    docFile = DocumentFile.fromSingleUri(this, item.uri);
-                }
+                DocumentFile docFile = item.isFolder ? DocumentFile.fromTreeUri(this, item.uri) : DocumentFile.fromSingleUri(this, item.uri);
                 if (docFile != null && docFile.exists()) {
                     success = docFile.delete();
                 }
             } catch (Exception e) {
                 e.printStackTrace();
             }
-            // 如果物理删除成功，同步清理数据库
-            if (success && isHomeScreen && dbHelper != null) {
+            if (success && currentMode == MODE_HOME && dbHelper != null) {
                 dbHelper.deleteItem(item.uri.toString());
             }
-
             boolean finalSuccess = success;
             runOnUiThread(() -> callback.accept(finalSuccess));
         });
@@ -242,6 +422,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         getMenuInflater().inflate(R.menu.menu_toolbar, menu);
+        uiManager.setupOptionsMenu(menu);
         return true;
     }
 

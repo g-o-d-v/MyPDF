@@ -11,9 +11,15 @@ import java.util.List;
 
 public class PdfListAdapter extends RecyclerView.Adapter<PdfListAdapter.ViewHolder> {
 
+    private static final int TYPE_LIST = 0;
+    private static final int TYPE_GRID = 1;
+    private static final int TYPE_FOOTER = 2; // 新增：脚部提示类型
+
     private List<PdfItem> itemList;
     private OnItemInteractionListener listener;
-    private boolean isGridView = false; // 控制当前是列表还是宫格
+    private boolean isGridView = false;
+    private boolean showPath = true;
+    private boolean isRecentMode = false; // 新增：控制是否追加脚部文字
 
     public interface OnItemInteractionListener {
         void onClick(PdfItem item);
@@ -27,18 +33,51 @@ public class PdfListAdapter extends RecyclerView.Adapter<PdfListAdapter.ViewHold
 
     public void setGridView(boolean isGridView) {
         this.isGridView = isGridView;
-        notifyDataSetChanged(); // 刷新整个列表以改变视图
+        notifyDataSetChanged();
+    }
+
+    public void setShowPath(boolean showPath) {
+        this.showPath = showPath;
+        notifyDataSetChanged();
+    }
+
+    // 新增：动态开启最近查看专属的脚部提示
+    public void setRecentMode(boolean isRecentMode) {
+        this.isRecentMode = isRecentMode;
+        notifyDataSetChanged();
+    }
+
+    @Override
+    public int getItemCount() {
+        // 如果是最近查看模式，列表总数需要 + 1 用于放置底部固定文字
+        return isRecentMode ? itemList.size() + 1 : itemList.size();
     }
 
     @Override
     public int getItemViewType(int position) {
-        return isGridView ? 1 : 0;
+        if (isRecentMode && position == itemList.size()) {
+            return TYPE_FOOTER;
+        }
+        return isGridView ? TYPE_GRID : TYPE_LIST;
     }
 
     @NonNull
     @Override
     public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-        // 根据 viewType 加载不同的 XML 布局
+        if (viewType == TYPE_FOOTER) {
+            // 动态构建底部的固定提示文字布局
+            TextView tvFooter = new TextView(parent.getContext());
+            ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            tvFooter.setLayoutParams(lp);
+            tvFooter.setGravity(android.view.Gravity.CENTER);
+            tvFooter.setPadding(0, 45, 0, 45);
+            tvFooter.setText("— 只显示最近查看的10个文件 —");
+            tvFooter.setTextColor(android.graphics.Color.GRAY);
+            tvFooter.setTextSize(13);
+            return new ViewHolder(tvFooter);
+        }
+
         int layoutId = (viewType == 1) ? R.layout.item_file_grid : R.layout.item_file_list;
         View view = LayoutInflater.from(parent.getContext()).inflate(layoutId, parent, false);
         return new ViewHolder(view);
@@ -46,10 +85,14 @@ public class PdfListAdapter extends RecyclerView.Adapter<PdfListAdapter.ViewHold
 
     @Override
     public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
+        // 如果当前是脚部提示行，不需要绑定常规数据，直接跳过
+        if (getItemViewType(position) == TYPE_FOOTER) {
+            return;
+        }
+
         PdfItem item = itemList.get(position);
 
         if (isGridView) {
-            // 绑定宫格布局数据
             holder.tvGridName.setText(item.name);
             if (item.isFolder) {
                 holder.tvGridTime.setVisibility(View.GONE);
@@ -58,50 +101,50 @@ public class PdfListAdapter extends RecyclerView.Adapter<PdfListAdapter.ViewHold
                 holder.tvGridTime.setText(item.time);
             }
         } else {
-            // 绑定列表布局数据
             holder.tvFileName.setText(item.name);
             holder.tvFileTime.setText(item.time);
 
-            // 处理路径隐藏（如果路径为空字符串，则隐藏地址框）
-            if (item.path == null || item.path.isEmpty()) {
-                holder.tvFilePath.setVisibility(View.GONE);
-            } else {
+            if (showPath && item.path != null && !item.path.isEmpty()) {
                 holder.tvFilePath.setVisibility(View.VISIBLE);
-                holder.tvFilePath.setText(item.path);
+                if (item.isFolder) {
+                    holder.tvFilePath.setText("文件夹：" + item.path);
+                } else {
+                    holder.tvFilePath.setText("PDF文件：" + item.path);
+                }
+            } else {
+                holder.tvFilePath.setVisibility(View.GONE);
             }
 
             if (item.isFolder) {
-                holder.ivIcon.setImageResource(android.R.drawable.ic_menu_gallery);
+                holder.ivIcon.setImageResource(R.drawable.ic_folder);
                 holder.tvFileTime.setVisibility(View.GONE);
             } else {
-                holder.ivIcon.setImageResource(android.R.drawable.ic_menu_info_details);
+                holder.ivIcon.setImageResource(R.drawable.ic_file_pdf);
                 holder.tvFileTime.setVisibility(View.VISIBLE);
             }
         }
 
-        // 绑定点击事件
-        holder.itemView.setOnClickListener(v -> listener.onClick(item));
+        holder.itemView.setOnClickListener(v -> {
+            if (holder.getAdapterPosition() != RecyclerView.NO_POSITION) {
+                listener.onClick(item);
+            }
+        });
+
         holder.itemView.setOnLongClickListener(v -> {
-            listener.onLongClick(v, item);
+            if (holder.getAdapterPosition() != RecyclerView.NO_POSITION) {
+                listener.onLongClick(v, item);
+            }
             return true;
         });
     }
 
-    @Override
-    public int getItemCount() {
-        return itemList.size();
-    }
-
     public static class ViewHolder extends RecyclerView.ViewHolder {
-        // 列表布局控件
         TextView tvFilePath, tvFileName, tvFileTime;
         ImageView ivIcon;
-        // 宫格布局控件
         TextView tvGridName, tvGridTime;
 
         public ViewHolder(@NonNull View itemView) {
             super(itemView);
-            // 尝试获取两种布局的控件，不存在的会为 null
             tvFilePath = itemView.findViewById(R.id.tv_file_path);
             tvFileName = itemView.findViewById(R.id.tv_file_name);
             tvFileTime = itemView.findViewById(R.id.tv_file_time);

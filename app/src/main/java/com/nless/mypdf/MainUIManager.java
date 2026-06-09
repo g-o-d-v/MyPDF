@@ -1,6 +1,7 @@
 package com.nless.mypdf;
 
 import android.content.Intent;
+import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.TextView;
@@ -16,6 +17,7 @@ import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+import androidx.appcompat.widget.SearchView;
 
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.google.android.material.navigation.NavigationView;
@@ -66,12 +68,20 @@ public class MainUIManager {
                 R.string.navigation_drawer_close);
         drawerLayout.addDrawerListener(toggle);
         toggle.syncState();
+        toolbar.setNavigationOnClickListener(v -> drawerLayout.openDrawer(GravityCompat.START));
     }
 
     private void setupListeners() {
         navigationView.setNavigationItemSelectedListener(item -> {
-            Toast.makeText(activity, "点击了: " + item.getTitle(), Toast.LENGTH_SHORT).show();
             drawerLayout.closeDrawer(GravityCompat.START);
+            int id = item.getItemId();
+            if (id == R.id.nav_recent) {
+                if (activity instanceof MainActivity) {
+                    ((MainActivity) activity).loadRecentData();
+                }
+            } else if (id == R.id.nav_favorites) {
+                Toast.makeText(activity, "收藏功能开发中", Toast.LENGTH_SHORT).show();
+            }
             return true;
         });
 
@@ -100,18 +110,18 @@ public class MainUIManager {
 
             @Override
             public void onClick(PdfItem item) {
-                // 将防抖时间缩短到 300ms，防止正常连击被误杀
                 long currentTime = System.currentTimeMillis();
                 if (currentTime - lastClickTime < 300) return;
                 lastClickTime = currentTime;
 
                 if (!item.isFolder) {
-                    // 点击 PDF：直接独立启动阅读器，与后台加载完全互不干扰
+                    if (activity instanceof MainActivity) {
+                        ((MainActivity) activity).recordViewHistory(item);
+                    }
                     Intent intent = new Intent(activity, PdfViewerActivity.class);
                     intent.putExtra("pdf_uri", item.uri.toString());
                     activity.startActivity(intent);
                 } else {
-                    // 点击文件夹：调用 MainActivity 进行无缝原位切换
                     if (activity instanceof MainActivity) {
                         ((MainActivity) activity).switchToFolderView(item);
                     }
@@ -128,6 +138,21 @@ public class MainUIManager {
 
     private void showPopupMenu(View anchor, PdfItem item) {
         PopupMenu popup = new PopupMenu(activity, anchor);
+
+        if (activity instanceof MainActivity && ((MainActivity) activity).getCurrentMode() == MainActivity.MODE_RECENT) {
+            popup.getMenu().add(0, 4, 0, "从历史记录移除 (Remove from history)");
+            popup.setOnMenuItemClickListener(menuItem -> {
+                if (menuItem.getItemId() == 4) {
+                    removePdfItemFromUI(item);
+                    ((MainActivity) activity).removeRecentRecord(item);
+                    Toast.makeText(activity, "已从历史记录移除", Toast.LENGTH_SHORT).show();
+                }
+                return true;
+            });
+            popup.show();
+            return;
+        }
+
         popup.getMenu().add(0, 1, 0, "重命名 (Rename)");
         popup.getMenu().add(0, 2, 0, "复制 (Duplicate)");
         popup.getMenu().add(0, 3, 0, "移动 (Move)");
@@ -178,54 +203,101 @@ public class MainUIManager {
             pdfItemList.remove(index);
             adapter.notifyItemRemoved(index);
             if (pdfItemList.isEmpty()) {
-                tvEmptyState.setVisibility(View.VISIBLE);
-                recyclerView.setVisibility(View.GONE);
+                showEmptyStateByMode();
             }
         }
     }
 
-    // 核心优化 1：清空列表
+    // 🌟 核心优化 1：清空方法彻底解耦，不自动跑默认空提示
     public void clearList() {
         int size = pdfItemList.size();
         if (size > 0) {
             pdfItemList.clear();
             adapter.notifyItemRangeRemoved(0, size);
         }
-        tvEmptyState.setVisibility(View.VISIBLE);
         recyclerView.setVisibility(View.GONE);
+        tvEmptyState.setVisibility(View.GONE);
     }
 
-    // 核心优化 2：局部插入代替全局刷新，彻底解决首次点击失效和相互干扰问题
+    // 🌟 新增：显式控制中间缓冲态“搜索中...”
+    public void showSearchingState() {
+        recyclerView.setVisibility(View.GONE);
+        tvEmptyState.setVisibility(View.VISIBLE);
+        tvEmptyState.setText("搜索中...");
+        tvEmptyState.setClickable(false);
+    }
+
+    // 🌟 新增：显式注入自定义空文案与事件挂载状态
+    public void showEmptyState(String message, boolean clickable) {
+        recyclerView.setVisibility(View.GONE);
+        tvEmptyState.setVisibility(View.VISIBLE);
+        tvEmptyState.setText(message);
+        tvEmptyState.setClickable(clickable);
+    }
+
+    // 🌟 新增：显式开关右下角浮动加号
+    public void showFab(boolean visible) {
+        if (fabAdd != null) {
+            fabAdd.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    public void showEmptyStateByMode() {
+        // 🌟 确保列表隐藏，文字浮现
+        recyclerView.setVisibility(View.GONE);
+        tvEmptyState.setVisibility(View.VISIBLE);
+
+        if (activity instanceof MainActivity) {
+            int mode = ((MainActivity) activity).getCurrentMode();
+            if (mode == MainActivity.MODE_HOME) {
+                tvEmptyState.setText("暂无文件，请点击添加");
+                tvEmptyState.setClickable(true);
+            } else {
+                tvEmptyState.setText("没有文件");
+                tvEmptyState.setClickable(false);
+            }
+        }
+    }
+
     public void addPdfItem(PdfItem item) {
         pdfItemList.add(item);
-        // 使用 notifyItemInserted 仅插入一行，不干扰用户当前正在点击的列表项
         adapter.notifyItemInserted(pdfItemList.size() - 1);
 
-        if (tvEmptyState.getVisibility() == View.VISIBLE) {
-            tvEmptyState.setVisibility(View.GONE);
-            recyclerView.setVisibility(View.VISIBLE);
+        // 🌟 核心修正：只要有文件被添加进来，无条件强制让 RecyclerView 显示，让空提示隐藏
+        tvEmptyState.setVisibility(View.GONE);
+        recyclerView.setVisibility(View.VISIBLE);
+    }
+
+    public void setShowPath(boolean showPath) {
+        if (adapter != null) {
+            adapter.setShowPath(showPath);
         }
     }
 
-    public void setupAsFolderView(String folderName) {
+    public void setRecentMode(boolean isRecent) {
+        if (adapter != null) {
+            adapter.setRecentMode(isRecent);
+        }
+    }
+
+    public void setupAsSubView(String title) {
         if (activity.getSupportActionBar() != null) {
-            activity.getSupportActionBar().setTitle(folderName);
+            activity.getSupportActionBar().setTitle(title);
         }
         fabAdd.setVisibility(View.GONE);
+        drawerLayout.setFitsSystemWindows(true);
         drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED);
         toolbar.setNavigationIcon(androidx.appcompat.R.drawable.abc_ic_ab_back_material);
         toolbar.setNavigationOnClickListener(v -> activity.onBackPressed());
     }
 
-    // 核心优化 3：提供恢复首页的 UI 切换方法
     public void setupAsHomeView() {
         if (activity.getSupportActionBar() != null) {
-            activity.getSupportActionBar().setTitle(R.string.app_name); // 或者写死 "MyPDF"
+            activity.getSupportActionBar().setTitle(R.string.app_name);
         }
         fabAdd.setVisibility(View.VISIBLE);
         drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_UNLOCKED);
 
-        // 重新绑定汉堡菜单
         ActionBarDrawerToggle toggle = new ActionBarDrawerToggle(
                 activity, drawerLayout, toolbar,
                 R.string.navigation_drawer_open,
@@ -235,29 +307,69 @@ public class MainUIManager {
         toolbar.setNavigationOnClickListener(v -> drawerLayout.openDrawer(GravityCompat.START));
     }
 
-    public boolean handleToolbarMenuClick(MenuItem item) {
-        int id = item.getItemId();
-        if (id == R.id.action_search) {
-            Toast.makeText(activity, "触发搜索", Toast.LENGTH_SHORT).show();
-            return true;
-        } else if (id == R.id.action_switch_layout) {
-            // 1. 切换状态
-            isGridView = !isGridView;
+    public void updateTitle(String title) {
+        if (activity.getSupportActionBar() != null) {
+            activity.getSupportActionBar().setTitle(title);
+        }
+    }
 
-            // 2. 切换 RecyclerView 的排版管理器
-            if (isGridView) {
-                recyclerView.setLayoutManager(new GridLayoutManager(activity, 3));
-                // 当切换为网格视图时，右上角图标变成“列表图标”（提示用户点击可以切回列表）
-                item.setIcon(android.R.drawable.ic_menu_sort_by_size);
-            } else {
-                recyclerView.setLayoutManager(new LinearLayoutManager(activity));
-                // 当切换为列表视图时，右上角图标变成“网格图标”（提示用户点击可以切回网格）
-                item.setIcon(R.drawable.ic_view_grid);
+    public void setupOptionsMenu(Menu menu) {
+        MenuItem searchItem = menu.findItem(R.id.action_search);
+        if (searchItem == null) return;
+        SearchView searchView = (SearchView) searchItem.getActionView();
+        if (searchView == null) return;
+
+        searchView.setQueryHint("搜索文件名...");
+        searchView.setOnQueryTextListener(new SearchView.OnQueryTextListener() {
+            @Override
+            public boolean onQueryTextSubmit(String query) {
+                if (activity instanceof MainActivity) {
+                    ((MainActivity) activity).performSearch(query);
+                }
+                searchView.clearFocus();
+                return true;
             }
 
-            // 3. 通知适配器更新视图类型
-            adapter.setGridView(isGridView);
+            @Override
+            public boolean onQueryTextChange(String newText) {
+                if (newText.isEmpty() && activity instanceof MainActivity) {
+                    ((MainActivity) activity).exitSubView();
+                }
+                return false;
+            }
+        });
 
+        // 🌟 核心修改 2：加入 ActionExpand 侦听接力，捕捉点击放大镜图标的一瞬间
+        searchItem.setOnActionExpandListener(new MenuItem.OnActionExpandListener() {
+            @Override
+            public boolean onMenuItemActionExpand(MenuItem item) {
+                if (activity instanceof MainActivity) {
+                    ((MainActivity) activity).enterSearchMode(); // 展开即锁死当前背景模式
+                }
+                return true;
+            }
+
+            @Override
+            public boolean onMenuItemActionCollapse(MenuItem item) {
+                if (activity instanceof MainActivity) {
+                    ((MainActivity) activity).exitSubView();
+                }
+                return true;
+            }
+        });
+    }
+
+    public boolean handleToolbarMenuClick(MenuItem item) {
+        int id = item.getItemId();
+        if (id == R.id.action_switch_layout) {
+            isGridView = !isGridView;
+            if (isGridView) {
+                recyclerView.setLayoutManager(new GridLayoutManager(activity, 3));
+            } else {
+                recyclerView.setLayoutManager(new LinearLayoutManager(activity));
+            }
+            adapter.setGridView(isGridView);
+            item.setIcon(isGridView ? android.R.drawable.ic_menu_sort_by_size : R.drawable.ic_view_grid);
             return true;
         }
         return false;
