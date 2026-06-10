@@ -225,4 +225,59 @@ public class PdfDbHelper extends SQLiteOpenHelper {
                         "ORDER BY max_viewed DESC LIMIT 10", null);
         return parseCursor(cursor, DISPLAY_MODE_RECENT);
     }
+
+    // 🌟 1. 检查某个文件是否已被收藏（基于路径和文件名联合查询）
+    public boolean isFavorite(String path, String name) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cursor = db.query("items", new String[]{"uri"}, "path=? AND name=? AND inFavorite=1",
+                new String[]{path, name}, null, null, null);
+        boolean isFav = (cursor.getCount() > 0);
+        cursor.close();
+        return isFav;
+    }
+
+    // 🌟 2. 切换收藏状态（开启/取消）
+    // 如果是从文件夹内部直接点开的未添加文件，点击收藏时会自动生成一条隐式记录
+    public boolean toggleFavorite(String path, String name, String uriStr, String originalTime) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        String targetUri = getExistingUri(path, name);
+
+        boolean nowFavorite = !isFavorite(path, name);
+
+        ContentValues values = new ContentValues();
+        values.put("inFavorite", nowFavorite ? 1 : 0);
+        values.put("favoriteTime", nowFavorite ? System.currentTimeMillis() : 0);
+
+        if (targetUri != null) {
+            db.update("items", values, "uri=?", new String[]{targetUri});
+        } else {
+            // 隐式插入从未记录过的深层文件
+            values.put("uri", uriStr);
+            values.put("name", name);
+            values.put("path", path);
+            values.put("time", originalTime);
+            values.put("isFolder", 0);
+            values.put("createTime", System.currentTimeMillis());
+            db.insert("items", null, values);
+        }
+        clearOrphanRecords(db);
+        return nowFavorite; // 返回当前最新的收藏状态
+    }
+
+    // 🌟 3. 从收藏列表中移除（供长按菜单或取消收藏时软删除调用）
+    public void removeFavoriteItem(String uriString) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put("inFavorite", 0);
+        values.put("favoriteTime", 0);
+        db.update("items", values, "uri=?", new String[]{uriString});
+        clearOrphanRecords(db);
+    }
+
+    // 🌟 4. 获取收藏列表数据（按收藏时间降序排列，强制使用收藏时间显示）
+    public List<PdfItem> getFavoriteItems() {
+        Cursor cursor = this.getReadableDatabase().rawQuery(
+                "SELECT * FROM items WHERE inFavorite = 1 ORDER BY favoriteTime DESC", null);
+        return parseCursor(cursor, DISPLAY_MODE_FAVORITE);
+    }
 }

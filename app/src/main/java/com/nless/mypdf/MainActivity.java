@@ -408,6 +408,39 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    // 🌟 原位加载收藏夹视图
+    public void loadFavoriteData() {
+        currentMode = MODE_FAVORITE;
+        uiManager.clearList();
+        uiManager.setShowPath(true); // 收藏页面展示路径
+        uiManager.setRecentMode(false);
+        uiManager.setupAsSubView("收藏夹");
+
+        List<PdfItem> favoriteItems = dbHelper.getFavoriteItems();
+        if (favoriteItems.isEmpty()) {
+            uiManager.showEmptyState("没有文件", false);
+        } else {
+            for (PdfItem item : favoriteItems) {
+                uiManager.addPdfItem(item);
+            }
+        }
+    }
+
+    // 🌟 修复核心 1：真正打通取消收藏的数据库操作
+    public void removeFavoriteRecord(PdfItem item) {
+        if (dbHelper != null) {
+            executorService.execute(() -> {
+                dbHelper.removeFavoriteItem(item.uri.toString()); // 更改标志位并安全清理
+                runOnUiThread(() -> {
+                    // 如果当前还在收藏夹页面，原地重新静默绘制，确保数据绝对同步
+                    if (currentMode == MODE_FAVORITE) {
+                        loadFavoriteData();
+                    }
+                });
+            });
+        }
+    }
+
     public void deleteFilePhysically(PdfItem item, Consumer<Boolean> callback) {
         executorService.execute(() -> {
             boolean success = false;

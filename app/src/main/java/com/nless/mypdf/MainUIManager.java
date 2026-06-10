@@ -80,7 +80,10 @@ public class MainUIManager {
                     ((MainActivity) activity).loadRecentData();
                 }
             } else if (id == R.id.nav_favorites) {
-                Toast.makeText(activity, "收藏功能开发中", Toast.LENGTH_SHORT).show();
+                // 🌟 激活侧滑菜单的收藏功能
+                if (activity instanceof MainActivity) {
+                    ((MainActivity) activity).loadFavoriteData();
+                }
             }
             return true;
         });
@@ -120,6 +123,9 @@ public class MainUIManager {
                     }
                     Intent intent = new Intent(activity, PdfViewerActivity.class);
                     intent.putExtra("pdf_uri", item.uri.toString());
+                    // 🌟 核心新增：将清洗后的路径和文件名传给阅读器，用于精准判重联动
+                    intent.putExtra("pdf_path", item.path);
+                    intent.putExtra("pdf_name", item.name);
                     activity.startActivity(intent);
                 } else {
                     if (activity instanceof MainActivity) {
@@ -189,7 +195,7 @@ public class MainUIManager {
                             mainAct.removePdfItemFromApp(item); // 触发移除动作
                             Toast.makeText(activity, "已从列表中移除", Toast.LENGTH_SHORT).show();
                         } else if (mainAct.getCurrentMode() == MainActivity.MODE_FAVORITE) {
-                            // mainAct.removeFavoriteRecord(item); // 留给后续收藏功能单点挂载
+                             mainAct.removeFavoriteRecord(item); // 留给后续收藏功能单点挂载
                             Toast.makeText(activity, "已取消收藏", Toast.LENGTH_SHORT).show();
                         }
                     }
