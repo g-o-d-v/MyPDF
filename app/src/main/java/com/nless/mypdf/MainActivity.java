@@ -30,6 +30,7 @@ public class MainActivity extends AppCompatActivity {
     public static final int MODE_FOLDER = 1;
     public static final int MODE_RECENT = 2;
     public static final int MODE_SEARCH = 3;
+    public static final int MODE_FAVORITE = 4; // 🌟 预留：收藏页面常数标尺
 
     private int currentMode = MODE_HOME;
     private int preSearchMode = MODE_HOME;
@@ -63,19 +64,20 @@ public class MainActivity extends AppCompatActivity {
                 if (result.getResultCode() == RESULT_OK && result.getData() != null) {
                     Uri uri = result.getData().getData();
                     if (uri != null && currentMode == MODE_HOME) {
-                        if (dbHelper.exists(uri.toString())) {
+                        String displayPath = cleanPath(uri.getPath());
+                        DocumentFile documentFile = DocumentFile.fromSingleUri(this, uri);
+                        String name = documentFile != null && documentFile.getName() != null ? documentFile.getName() : "未命名.pdf";
+
+                        if (dbHelper.existsInHome(uri.toString())) {
                             Toast.makeText(this, "该文件已在首页列表中", Toast.LENGTH_SHORT).show();
                             return;
                         }
-                        DocumentFile documentFile = DocumentFile.fromSingleUri(this, uri);
-                        if (documentFile != null && documentFile.exists()) {
-                            String name = documentFile.getName();
-                            String time = dateFormat.format(new Date(documentFile.lastModified()));
-                            String displayPath = cleanPath(uri.getPath());
 
-                            PdfItem item = new PdfItem(uri, name != null ? name : "未命名.pdf", displayPath, time, false);
-                            dbHelper.insertItem(item);
-                            uiManager.addPdfItem(item);
+                        if (documentFile != null && documentFile.exists()) {
+                            String time = dateFormat.format(new Date(documentFile.lastModified()));
+                            PdfItem item = new PdfItem(uri, name, displayPath, time, false);
+                            dbHelper.insertOrUpdateHomeItem(item);
+                            loadHomeData();
                         }
                     }
                 }
@@ -88,7 +90,7 @@ public class MainActivity extends AppCompatActivity {
                 if (result.getResultCode() == RESULT_OK && result.getData() != null) {
                     Uri treeUri = result.getData().getData();
                     if (treeUri != null && currentMode == MODE_HOME) {
-                        if (dbHelper.exists(treeUri.toString())) {
+                        if (dbHelper.existsInHome(treeUri.toString())) {
                             Toast.makeText(this, "该文件夹已在首页列表中", Toast.LENGTH_SHORT).show();
                             return;
                         }
@@ -115,10 +117,8 @@ public class MainActivity extends AppCompatActivity {
                                     String displayPath = cleanPath(treeUri.getPath());
                                     PdfItem item = new PdfItem(treeUri, name != null ? name : "未命名文件夹", displayPath, "", true);
 
-                                    runOnUiThread(() -> {
-                                        dbHelper.insertItem(item);
-                                        uiManager.addPdfItem(item);
-                                    });
+                                    dbHelper.insertOrUpdateHomeItem(item);
+                                    runOnUiThread(this::loadHomeData);
                                 } else {
                                     runOnUiThread(() -> Toast.makeText(MainActivity.this,
                                             "该文件夹层不包含直接的 PDF 文件，无法添加", Toast.LENGTH_LONG).show());
@@ -163,7 +163,8 @@ public class MainActivity extends AppCompatActivity {
         uiManager.clearList();
         uiManager.setShowPath(true);
         uiManager.setRecentMode(false);
-        List<PdfItem> savedItems = dbHelper.getAllItems();
+        uiManager.showFab(true);
+        List<PdfItem> savedItems = dbHelper.getAllHomeItems();
         if (savedItems.isEmpty()) {
             uiManager.showEmptyStateByMode();
         } else {
@@ -206,7 +207,7 @@ public class MainActivity extends AppCompatActivity {
             if (folder != null && folder.exists() && folder.isDirectory()) {
                 DocumentFile[] files = folder.listFiles();
                 if (files == null || files.length == 0) {
-                    runOnUiThread(() -> uiManager.showEmptyStateByMode());
+                    runOnUiThread(() -> uiManager.showEmptyState("没有文件", false));
                     return;
                 }
                 boolean addedAny = false;
@@ -216,18 +217,23 @@ public class MainActivity extends AppCompatActivity {
                                 (file.getName() != null && file.getName().toLowerCase().endsWith(".pdf"));
                         if (isPdf) {
                             String name = file.getName();
-                            String time = dateFormat.format(new Date(file.lastModified()));
-                            // 🌟 核心修复：不再手动拼接路径，而是从系统 URI 中提取该文件的真实物理路径
                             String realPath = cleanPath(file.getUri().getPath());
+
+                            // 🌟 核心拦截：如果当前文件夹内的文件已被打上排除标记，拒绝在视图层重新拉出
+                            if (dbHelper != null && dbHelper.isFileExcluded(realPath, name)) {
+                                continue;
+                            }
+
+                            String time = dateFormat.format(new Date(file.lastModified()));
                             PdfItem item = new PdfItem(file.getUri(), name != null ? name : "未知文件", realPath, time, false);
                             runOnUiThread(() -> uiManager.addPdfItem(item));
                             addedAny = true;
                         }
                     }
                 }
-                if (!addedAny) runOnUiThread(() -> uiManager.showEmptyStateByMode());
+                if (!addedAny) runOnUiThread(() -> uiManager.showEmptyState("没有文件", false));
             } else {
-                runOnUiThread(() -> uiManager.showEmptyStateByMode());
+                runOnUiThread(() -> uiManager.showEmptyState("没有文件", false));
             }
         });
     }
@@ -250,7 +256,7 @@ public class MainActivity extends AppCompatActivity {
 
         List<PdfItem> recentItems = dbHelper.getRecentItems();
         if (recentItems.isEmpty()) {
-            uiManager.showEmptyStateByMode();
+            uiManager.showEmptyState("没有文件", false);
         } else {
             for (PdfItem item : recentItems) {
                 uiManager.addPdfItem(item);
@@ -267,7 +273,7 @@ public class MainActivity extends AppCompatActivity {
     public void removeRecentRecord(PdfItem item) {
         if (dbHelper != null) {
             executorService.execute(() -> {
-                dbHelper.deleteItem(item.uri.toString());
+                dbHelper.removeRecentItem(item.uri.toString());
                 runOnUiThread(() -> {
                     if (currentMode == MODE_RECENT) {
                         loadRecentData();
@@ -322,7 +328,7 @@ public class MainActivity extends AppCompatActivity {
 
         executorService.execute(() -> {
             String lowerKeyword = keyword.toLowerCase();
-            List<PdfItem> allHomeItems = dbHelper.getAllItems();
+            List<PdfItem> allHomeItems = dbHelper.getAllHomeItems();
             List<PdfItem> searchResults = new ArrayList<>();
             HashSet<String> uniqueFileRegistry = new HashSet<>();
 
@@ -338,20 +344,27 @@ public class MainActivity extends AppCompatActivity {
                 } else {
                     DocumentFile folder = DocumentFile.fromTreeUri(this, item.uri);
                     if (folder != null && folder.exists()) {
-                        for (DocumentFile file : folder.listFiles()) {
-                            if (!file.isDirectory() && file.getName() != null) {
-                                boolean isPdf = "application/pdf".equals(file.getType()) || file.getName().toLowerCase().endsWith(".pdf");
-                                if (isPdf && file.getName().toLowerCase().contains(lowerKeyword)) {
-                                    String name = file.getName();
-                                    String time = dateFormat.format(new Date(file.lastModified()));
-                                    // 🌟 核心修复：搜索时同样使用系统真实的物理路径进行注册和比对
-                                    String realPath = cleanPath(file.getUri().getPath());
+                        DocumentFile[] files = folder.listFiles();
+                        if (files != null) {
+                            for (DocumentFile file : files) {
+                                if (!file.isDirectory() && file.getName() != null) {
+                                    boolean isPdf = "application/pdf".equals(file.getType()) || file.getName().toLowerCase().endsWith(".pdf");
+                                    if (isPdf && file.getName().toLowerCase().contains(lowerKeyword)) {
+                                        String name = file.getName();
+                                        String time = dateFormat.format(new Date(file.lastModified()));
+                                        String realPath = cleanPath(file.getUri().getPath());
 
-                                    String fileKey = name + "@" + realPath;
-                                    if (!uniqueFileRegistry.contains(fileKey)) {
-                                        uniqueFileRegistry.add(fileKey);
-                                        PdfItem result = new PdfItem(file.getUri(), name, realPath, time, false);
-                                        searchResults.add(result);
+                                        // 🌟 核心拦截：全局穿透遍历搜索时，排除状态依然生效，被用户移除过的文件不进搜索结果
+                                        if (dbHelper.isFileExcluded(realPath, name)) {
+                                            continue;
+                                        }
+
+                                        String fileKey = name + "@" + realPath;
+                                        if (!uniqueFileRegistry.contains(fileKey)) {
+                                            uniqueFileRegistry.add(fileKey);
+                                            PdfItem result = new PdfItem(file.getUri(), name, realPath, time, false);
+                                            searchResults.add(result);
+                                        }
                                     }
                                 }
                             }
@@ -370,6 +383,7 @@ public class MainActivity extends AppCompatActivity {
                         uiManager.showEmptyState("暂无文件，请点击添加", true);
                     }
                 } else {
+                    uiManager.showFab(false);
                     if (searchResults.isEmpty()) {
                         uiManager.showEmptyState("没有文件", false);
                     }
@@ -382,9 +396,15 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    // 🌟 修正：向底层直接丢入完整 PdfItem，在 DB 层智能分流首页移除与深层拦截
     public void removePdfItemFromApp(PdfItem item) {
-        if (currentMode == MODE_HOME && dbHelper != null) {
-            dbHelper.deleteItem(item.uri.toString());
+        if (dbHelper != null) {
+            executorService.execute(() -> {
+                dbHelper.removeHomeItem(item);
+                runOnUiThread(() -> {
+                    if (currentMode == MODE_HOME) loadHomeData();
+                });
+            });
         }
     }
 
@@ -399,11 +419,14 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception e) {
                 e.printStackTrace();
             }
-            if (success && currentMode == MODE_HOME && dbHelper != null) {
+            if (success && dbHelper != null) {
                 dbHelper.deleteItem(item.uri.toString());
             }
             boolean finalSuccess = success;
-            runOnUiThread(() -> callback.accept(finalSuccess));
+            runOnUiThread(() -> {
+                callback.accept(finalSuccess);
+                if (finalSuccess && currentMode == MODE_HOME) loadHomeData();
+            });
         });
     }
 

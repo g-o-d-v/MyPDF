@@ -139,12 +139,20 @@ public class MainUIManager {
     private void showPopupMenu(View anchor, PdfItem item) {
         PopupMenu popup = new PopupMenu(activity, anchor);
 
-        if (activity instanceof MainActivity && ((MainActivity) activity).getCurrentMode() == MainActivity.MODE_RECENT) {
+        int currentMode = MainActivity.MODE_HOME;
+        if (activity instanceof MainActivity) {
+            currentMode = ((MainActivity) activity).getCurrentMode();
+        }
+
+        // 🌟 核心规则 2：最近查看中的文件应该【只有】移除功能，禁止生成重命名、详情等任何多余选项
+        if (currentMode == MainActivity.MODE_RECENT) {
             popup.getMenu().add(0, 4, 0, "从历史记录移除 (Remove from history)");
             popup.setOnMenuItemClickListener(menuItem -> {
                 if (menuItem.getItemId() == 4) {
                     removePdfItemFromUI(item);
-                    ((MainActivity) activity).removeRecentRecord(item);
+                    if (activity instanceof MainActivity) {
+                        ((MainActivity) activity).removeRecentRecord(item);
+                    }
                     Toast.makeText(activity, "已从历史记录移除", Toast.LENGTH_SHORT).show();
                 }
                 return true;
@@ -153,10 +161,21 @@ public class MainUIManager {
             return;
         }
 
+        // 其他页面的通用业务功能
         popup.getMenu().add(0, 1, 0, "重命名 (Rename)");
         popup.getMenu().add(0, 2, 0, "复制 (Duplicate)");
         popup.getMenu().add(0, 3, 0, "移动 (Move)");
-        popup.getMenu().add(0, 4, 0, "移除 (Remove from list)");
+
+        // 🌟 核心规则 1 & 3 & 4：权限分流器
+        if (currentMode == MainActivity.MODE_HOME || currentMode == MainActivity.MODE_FOLDER) {
+            // 首页中的文件、以及点进去文件夹内的文件，全部规整提供“移除”选项
+            popup.getMenu().add(0, 4, 0, "移除 (Remove from list)");
+        } else if (currentMode == MainActivity.MODE_FAVORITE) {
+            // 🌟 顺应要求，完美对后续收藏功能提前打通权限：“收藏中的文件应该有移除（取消收藏）功能”
+            popup.getMenu().add(0, 4, 0, "取消收藏 (Remove from favorites)");
+        }
+        // 当 currentMode == MainActivity.MODE_SEARCH (搜索) 时，自动漏过此判断，实现“在搜索中的文件应该没有移除功能”
+
         popup.getMenu().add(0, 5, 0, "彻底删除 (Delete permanently)");
         popup.getMenu().add(0, 6, 0, "详情 (Details)");
 
@@ -165,9 +184,15 @@ public class MainUIManager {
                 case 4:
                     removePdfItemFromUI(item);
                     if (activity instanceof MainActivity) {
-                        ((MainActivity) activity).removePdfItemFromApp(item);
+                        MainActivity mainAct = (MainActivity) activity;
+                        if (mainAct.getCurrentMode() == MainActivity.MODE_HOME || mainAct.getCurrentMode() == MainActivity.MODE_FOLDER) {
+                            mainAct.removePdfItemFromApp(item); // 触发移除动作
+                            Toast.makeText(activity, "已从列表中移除", Toast.LENGTH_SHORT).show();
+                        } else if (mainAct.getCurrentMode() == MainActivity.MODE_FAVORITE) {
+                            // mainAct.removeFavoriteRecord(item); // 留给后续收藏功能单点挂载
+                            Toast.makeText(activity, "已取消收藏", Toast.LENGTH_SHORT).show();
+                        }
                     }
-                    Toast.makeText(activity, "已从首页移除", Toast.LENGTH_SHORT).show();
                     break;
                 case 5:
                     new AlertDialog.Builder(activity)
