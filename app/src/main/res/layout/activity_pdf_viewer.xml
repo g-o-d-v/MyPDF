@@ -3,10 +3,15 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#00000000">
+    android:background="#F5F5F5">
 
     <com.github.barteksc.pdfviewer.PDFView
         android:id="@+id/pdfView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <com.nless.mypdf.PdfOverlayView
+        android:id="@+id/pdfOverlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
@@ -14,9 +19,9 @@
         android:id="@+id/top_menu_layout"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
         android:background="#03A9F4"
-        android:elevation="6dp">
+        android:elevation="6dp"
+        android:orientation="vertical">
 
         <RelativeLayout
             android:layout_width="match_parent"
@@ -36,13 +41,13 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_centerInParent="true"
+                android:ellipsize="middle"
+                android:maxWidth="200dp"
+                android:singleLine="true"
                 android:text="Loading..."
                 android:textColor="#333333"
                 android:textSize="16sp"
-                android:textStyle="bold"
-                android:maxWidth="185dp"
-                android:singleLine="true"
-                android:ellipsize="middle"/>
+                android:textStyle="bold" />
 
             <LinearLayout
                 android:layout_width="wrap_content"
@@ -56,23 +61,23 @@
                     android:layout_width="40dp"
                     android:layout_height="match_parent"
                     android:padding="8dp"
-                    android:visibility="gone"
-                    android:src="@android:drawable/ic_menu_revert" />
+                    android:src="@android:drawable/ic_menu_revert"
+                    android:visibility="gone" />
 
                 <ImageView
                     android:id="@+id/iv_favorite"
                     android:layout_width="40dp"
                     android:layout_height="match_parent"
                     android:padding="8dp"
-                    android:src="@android:drawable/btn_star" />
+                    android:src="@drawable/ic_star_circle" />
 
                 <ImageView
                     android:id="@+id/iv_save"
                     android:layout_width="40dp"
                     android:layout_height="match_parent"
                     android:padding="8dp"
-                    android:visibility="gone"
-                    android:src="@android:drawable/ic_menu_save" />
+                    android:src="@android:drawable/ic_menu_save"
+                    android:visibility="gone" />
 
                 <ImageView
                     android:id="@+id/iv_edit_mode"
@@ -82,6 +87,13 @@
                     android:src="@android:drawable/ic_menu_edit" />
             </LinearLayout>
         </RelativeLayout>
+
+        <View
+            android:id="@+id/divider_line"
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#E0E0E0"
+            android:visibility="gone"/>
 
         <LinearLayout
             android:id="@+id/ll_edit_tools_row"
@@ -97,24 +109,149 @@
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
-                android:padding="10dp"
-                android:src="@drawable/ic_hand"
-                app:tint="#4CAF50" />
-            <ImageView
-                android:id="@+id/iv_tool_text"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:padding="10dp"
-                android:src="@drawable/ic_text" />
+                android:padding="12dp"
+                android:src="@drawable/ic_hand" />
 
             <ImageView
                 android:id="@+id/iv_tool_doodle"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
-                android:padding="10dp"
+                android:padding="12dp"
                 android:src="@drawable/ic_doodle" />
+
+            <ImageView
+                android:id="@+id/iv_tool_text"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:padding="12dp"
+                android:src="@drawable/ic_text" />
         </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/ll_doodle_properties"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#F0F0F0"
+            android:orientation="vertical"
+            android:padding="8dp"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:baselineAligned="false">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="3"
+                    android:orientation="horizontal"
+                    android:baselineAligned="false">
+
+                    <LinearLayout android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:orientation="horizontal" android:gravity="center">
+                        <ImageView android:id="@+id/iv_pen_drop" android:layout_width="18dp" android:layout_height="18dp" android:src="@android:drawable/arrow_down_float" app:tint="#666666"/>
+                        <TextView android:id="@+id/tv_pen_tool" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="铅笔" android:textColor="#4CAF50" android:textStyle="bold" android:textSize="12sp" android:padding="2dp"/>
+                    </LinearLayout>
+
+                    <LinearLayout android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:orientation="horizontal" android:gravity="center">
+                        <ImageView android:id="@+id/iv_arrow_drop" android:layout_width="18dp" android:layout_height="18dp" android:src="@android:drawable/arrow_down_float" app:tint="#666666"/>
+                        <TextView android:id="@+id/tv_arrow_tool" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="单向箭头" android:textColor="#333333" android:textSize="12sp" android:padding="2dp"/>
+                    </LinearLayout>
+
+                    <LinearLayout android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:orientation="horizontal" android:gravity="center">
+                        <ImageView android:id="@+id/iv_shape_drop" android:layout_width="18dp" android:layout_height="18dp" android:src="@android:drawable/arrow_down_float" app:tint="#666666"/>
+                        <TextView android:id="@+id/tv_shape_tool" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="矩形框" android:textColor="#333333" android:textSize="12sp" android:padding="2dp"/>
+                    </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="粗细" android:textSize="11sp" android:textColor="#333333"/>
+                    <SeekBar android:id="@+id/seek_doodle_size" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="30" android:progress="5" android:paddingStart="6dp" android:paddingEnd="6dp"/>
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:layout_marginBottom="4dp"
+                android:orientation="horizontal"
+                android:gravity="center">
+                <View android:id="@+id/color_black" android:layout_width="24dp" android:layout_height="24dp" android:background="#000000" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+                <View android:id="@+id/color_white" android:layout_width="24dp" android:layout_height="24dp" android:background="#FFFFFF" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+                <View android:id="@+id/color_gray" android:layout_width="24dp" android:layout_height="24dp" android:background="#999999" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+                <View android:id="@+id/color_red" android:layout_width="24dp" android:layout_height="24dp" android:background="#F44336" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+                <View android:id="@+id/color_yellow" android:layout_width="24dp" android:layout_height="24dp" android:background="#FFEB3B" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+                <View android:id="@+id/color_green" android:layout_width="24dp" android:layout_height="24dp" android:background="#4CAF50" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+                <View android:id="@+id/color_blue" android:layout_width="24dp" android:layout_height="24dp" android:background="#2196F3" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+                <View android:id="@+id/color_purple" android:layout_width="24dp" android:layout_height="24dp" android:background="#9C27B0" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/ll_text_properties"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#F0F0F0"
+            android:orientation="vertical"
+            android:padding="8dp"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:baselineAligned="false">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:orientation="horizontal">
+                    <TextView android:id="@+id/tv_style_bold" android:layout_width="50dp" android:layout_height="32dp" android:text="B" android:textStyle="bold" android:gravity="center" android:textColor="#999999" android:textSize="18sp"/>
+                    <TextView android:id="@+id/tv_style_italic" android:layout_width="50dp" android:layout_height="32dp" android:text="I" android:textStyle="italic" android:gravity="center" android:textColor="#999999" android:textSize="18sp"/>
+                    <TextView android:id="@+id/tv_style_underline" android:layout_width="50dp" android:layout_height="32dp" android:text="U" android:gravity="center" android:textColor="#999999" android:textSize="18sp"/>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="字号" android:textSize="11sp" android:textColor="#333333"/>
+                    <SeekBar android:id="@+id/seek_text_size" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="50" android:progress="16" android:paddingStart="6dp" android:paddingEnd="6dp"/>
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:layout_marginBottom="4dp"
+                android:orientation="horizontal"
+                android:gravity="center">
+                <View android:id="@+id/t_color_black" android:layout_width="24dp" android:layout_height="24dp" android:background="#000000" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+                <View android:id="@+id/t_color_white" android:layout_width="24dp" android:layout_height="24dp" android:background="#FFFFFF" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+                <View android:id="@+id/t_color_gray" android:layout_width="24dp" android:layout_height="24dp" android:background="#999999" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+                <View android:id="@+id/t_color_red" android:layout_width="24dp" android:layout_height="24dp" android:background="#F44336" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+                <View android:id="@+id/t_color_yellow" android:layout_width="24dp" android:layout_height="24dp" android:background="#FFEB3B" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+                <View android:id="@+id/t_color_green" android:layout_width="24dp" android:layout_height="24dp" android:background="#4CAF50" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+                <View android:id="@+id/t_color_blue" android:layout_width="24dp" android:layout_height="24dp" android:background="#2196F3" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+                <View android:id="@+id/t_color_purple" android:layout_width="24dp" android:layout_height="24dp" android:background="#9C27B0" android:layout_marginHorizontal="10dp" android:elevation="2dp"/>
+            </LinearLayout>
+        </LinearLayout>
+
     </LinearLayout>
 </RelativeLayout>

@@ -36,4 +36,5 @@ dependencies {
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
     // 添加高性能 PDF 渲染库（采用 mhiew 维护的适配新版 Android 的分支）
     implementation 'com.github.mhiew:android-pdf-viewer:3.2.0-beta.3'
+    implementation 'com.itextpdf:itextg:5.5.10'
 }

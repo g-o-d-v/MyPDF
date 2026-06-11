@@ -14,8 +14,11 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.documentfile.provider.DocumentFile;
 
+import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
@@ -158,6 +161,15 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+
+        // 🌟 只要页面重新回到前台（包括从阅读器退回来），就强制刷新一遍列表
+        // 注意：把下面的 loadPdfFiles() 替换成你代码里实际用来【读取文件 + 刷新 Adapter】的方法名！
+        loadHomeData();
+    }
+
     public void loadHomeData() {
         currentMode = MODE_HOME;
         uiManager.clearList();
@@ -211,6 +223,13 @@ public class MainActivity extends AppCompatActivity {
                     return;
                 }
                 boolean addedAny = false;
+                // 🌟 核心修改点：强制将这个文件夹下的物理文件按名称 A-Z 升序排列
+                Arrays.sort(files, (f1, f2) -> {
+                    String name1 = f1.getUri().getLastPathSegment();
+                    String name2 = f2.getUri().getLastPathSegment();
+                    return name1.compareTo(name2);
+                });
+
                 for (DocumentFile file : files) {
                     if (!file.isDirectory()) {
                         boolean isPdf = "application/pdf".equals(file.getType()) ||
