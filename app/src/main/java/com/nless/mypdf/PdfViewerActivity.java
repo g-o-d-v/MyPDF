@@ -601,10 +601,8 @@ public class PdfViewerActivity extends AppCompatActivity {
             }
         }).start();
     }
-
-
     // =========================================================================================
-    // 🌟 另存为功能（已测试非常稳定）
+    // 🌟 另存为功能（已修复：恢复存入安全的私有沙盒目录）
     // =========================================================================================
     private void executeiTextFastMerge() {
         if (pdfUri == null) return;
@@ -643,19 +641,8 @@ public class PdfViewerActivity extends AppCompatActivity {
                 String timeStamp = new SimpleDateFormat("HHmmss", Locale.getDefault()).format(new Date());
                 String targetCopyName = currentFileName + "-副本-" + timeStamp + ".pdf";
 
-                File parentDir = null;
-                if (pdfPath != null && !pdfPath.isEmpty()) {
-                    File srcFile = new File(pdfPath);
-                    if (srcFile.exists() && srcFile.getParentFile() != null && srcFile.getParentFile().canWrite()) {
-                        parentDir = srcFile.getParentFile();
-                    }
-                }
-                if (parentDir == null) {
-                    parentDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOCUMENTS);
-                }
-                if (!parentDir.exists()) parentDir.mkdirs();
-
-                File destFile = new File(parentDir, targetCopyName);
+                // 🌟 核心修复：直接使用专属沙盒目录，彻底告别权限拒绝崩溃！
+                File destFile = new File(getExternalFilesDir(null), targetCopyName);
                 FileOutputStream fos = new FileOutputStream(destFile);
 
                 PdfStamper stamper = new PdfStamper(reader, fos);
@@ -682,14 +669,6 @@ public class PdfViewerActivity extends AppCompatActivity {
                 reader.close();
                 fis.close();
 
-                MediaScannerConnection.scanFile(
-                        PdfViewerActivity.this,
-                        new String[]{destFile.getAbsolutePath()},
-                        new String[]{"application/pdf"},
-                        null
-                );
-
-                File finalParentDir = parentDir;
                 runOnUiThread(() -> {
                     progressDialog.dismiss();
                     if (dbHelper != null) {
@@ -698,7 +677,7 @@ public class PdfViewerActivity extends AppCompatActivity {
                             dbHelper.insertOrUpdateHomeItem(copyItem);
                         } catch (Exception ignore) {}
                     }
-                    Toast.makeText(this, "烙印成功！副本已推至: " + finalParentDir.getName(), Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, "烙印成功！副本已保存并推至大厅", Toast.LENGTH_LONG).show();
                     if (pdfOverlay != null) pdfOverlay.clearActions();
                     toggleEditMode(false);
                 });

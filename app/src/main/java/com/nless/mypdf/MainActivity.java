@@ -167,7 +167,9 @@ public class MainActivity extends AppCompatActivity {
 
         // 🌟 只要页面重新回到前台（包括从阅读器退回来），就强制刷新一遍列表
         // 注意：把下面的 loadPdfFiles() 替换成你代码里实际用来【读取文件 + 刷新 Adapter】的方法名！
-        loadHomeData();
+        if (currentMode == MODE_HOME) {
+            loadHomeData();
+        }
     }
 
     public void loadHomeData() {
