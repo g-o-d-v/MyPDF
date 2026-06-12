@@ -80,7 +80,6 @@ public class MainUIManager {
                     ((MainActivity) activity).loadRecentData();
                 }
             } else if (id == R.id.nav_favorites) {
-                // 🌟 激活侧滑菜单的收藏功能
                 if (activity instanceof MainActivity) {
                     ((MainActivity) activity).loadFavoriteData();
                 }
@@ -123,7 +122,6 @@ public class MainUIManager {
                     }
                     Intent intent = new Intent(activity, PdfViewerActivity.class);
                     intent.putExtra("pdf_uri", item.uri.toString());
-                    // 🌟 核心新增：将清洗后的路径和文件名传给阅读器，用于精准判重联动
                     intent.putExtra("pdf_path", item.path);
                     intent.putExtra("pdf_name", item.name);
                     activity.startActivity(intent);
@@ -150,16 +148,12 @@ public class MainUIManager {
             currentMode = ((MainActivity) activity).getCurrentMode();
         }
 
-        // 🌟 核心规则 2：最近查看中的文件应该【只有】移除功能，禁止生成重命名、详情等任何多余选项
+        // 1. 最近查看页面专属菜单
         if (currentMode == MainActivity.MODE_RECENT) {
-            popup.getMenu().add(0, 4, 0, "从历史记录移除 (Remove from history)");
+            popup.getMenu().add(Menu.NONE, 0, 0, "从历史记录移除");
             popup.setOnMenuItemClickListener(menuItem -> {
-                if (menuItem.getItemId() == 4) {
-                    removePdfItemFromUI(item);
-                    if (activity instanceof MainActivity) {
-                        ((MainActivity) activity).removeRecentRecord(item);
-                    }
-                    Toast.makeText(activity, "已从历史记录移除", Toast.LENGTH_SHORT).show();
+                if (activity instanceof MainActivity) {
+                    ((MainActivity) activity).removeRecentRecord(item);
                 }
                 return true;
             });
@@ -167,60 +161,49 @@ public class MainUIManager {
             return;
         }
 
-        // 其他页面的通用业务功能
-        popup.getMenu().add(0, 1, 0, "重命名 (Rename)");
-        popup.getMenu().add(0, 2, 0, "复制 (Duplicate)");
-        popup.getMenu().add(0, 3, 0, "移动 (Move)");
-
-        // 🌟 核心规则 1 & 3 & 4：权限分流器
+        // 2. 权限分流器：不同模式显示不同的移除文案
         if (currentMode == MainActivity.MODE_HOME || currentMode == MainActivity.MODE_FOLDER) {
-            // 首页中的文件、以及点进去文件夹内的文件，全部规整提供“移除”选项
-            popup.getMenu().add(0, 4, 0, "移除 (Remove from list)");
+            popup.getMenu().add(Menu.NONE, 1, 0, "从列表中移除");
         } else if (currentMode == MainActivity.MODE_FAVORITE) {
-            // 🌟 顺应要求，完美对后续收藏功能提前打通权限：“收藏中的文件应该有移除（取消收藏）功能”
-            popup.getMenu().add(0, 4, 0, "取消收藏 (Remove from favorites)");
+            popup.getMenu().add(Menu.NONE, 1, 0, "取消收藏");
         }
-        // 当 currentMode == MainActivity.MODE_SEARCH (搜索) 时，自动漏过此判断，实现“在搜索中的文件应该没有移除功能”
 
-        popup.getMenu().add(0, 5, 0, "彻底删除 (Delete permanently)");
-        popup.getMenu().add(0, 6, 0, "详情 (Details)");
+        popup.getMenu().add(Menu.NONE, 2, 0, "彻底删除");
+        popup.getMenu().add(Menu.NONE, 3, 0, "详情");
 
         popup.setOnMenuItemClickListener(menuItem -> {
+            MainActivity mainAct = (activity instanceof MainActivity) ? (MainActivity) activity : null;
+            if (mainAct == null) return true;
+
             switch (menuItem.getItemId()) {
-                case 4:
-                    removePdfItemFromUI(item);
-                    if (activity instanceof MainActivity) {
-                        MainActivity mainAct = (MainActivity) activity;
-                        if (mainAct.getCurrentMode() == MainActivity.MODE_HOME || mainAct.getCurrentMode() == MainActivity.MODE_FOLDER) {
-                            mainAct.removePdfItemFromApp(item); // 触发移除动作
-                            Toast.makeText(activity, "已从列表中移除", Toast.LENGTH_SHORT).show();
-                        } else if (mainAct.getCurrentMode() == MainActivity.MODE_FAVORITE) {
-                             mainAct.removeFavoriteRecord(item); // 留给后续收藏功能单点挂载
-                            Toast.makeText(activity, "已取消收藏", Toast.LENGTH_SHORT).show();
-                        }
+                case 1: // 移除
+                    if (mainAct.getCurrentMode() == MainActivity.MODE_HOME || mainAct.getCurrentMode() == MainActivity.MODE_FOLDER) {
+                        new AlertDialog.Builder(activity)
+                                .setTitle("确认移除")
+                                .setMessage("确定要从列表中移除此项目吗？（不会删除源物理文件）")
+                                .setPositiveButton("确定", (d, w) -> {
+                                    mainAct.removePdfItemFromApp(item);
+                                    Toast.makeText(activity, "已从列表中移除", Toast.LENGTH_SHORT).show();
+                                })
+                                .setNegativeButton("取消", null)
+                                .show();
+                    } else if (mainAct.getCurrentMode() == MainActivity.MODE_FAVORITE) {
+                        mainAct.removeFavoriteRecord(item);
+                        Toast.makeText(activity, "已取消收藏", Toast.LENGTH_SHORT).show();
                     }
                     break;
-                case 5:
+                case 2: // 彻底删除
                     new AlertDialog.Builder(activity)
                             .setTitle("警告：彻底删除")
-                            .setMessage("该操作将从您的手机存储中永久删除此文件，不可恢复！确认删除吗？")
-                            .setPositiveButton("彻底删除", (dialog, which) -> {
-                                if (activity instanceof MainActivity) {
-                                    ((MainActivity) activity).deleteFilePhysically(item, success -> {
-                                        if (success) {
-                                            removePdfItemFromUI(item);
-                                            Toast.makeText(activity, "文件已彻底删除", Toast.LENGTH_SHORT).show();
-                                        } else {
-                                            Toast.makeText(activity, "删除失败，可能是系统权限限制", Toast.LENGTH_SHORT).show();
-                                        }
-                                    });
-                                }
+                            .setMessage("该操作将永久删除磁盘上的此文件，不可恢复！确认删除吗？")
+                            .setPositiveButton("彻底删除", (d, w) -> {
+                                mainAct.performPhysicalDelete(item);
                             })
                             .setNegativeButton("取消", null)
                             .show();
                     break;
-                default:
-                    Toast.makeText(activity, "暂未实现: " + menuItem.getTitle(), Toast.LENGTH_SHORT).show();
+                case 3: // 详情
+                    mainAct.showFileDetailsDialog(item);
                     break;
             }
             return true;
@@ -228,7 +211,7 @@ public class MainUIManager {
         popup.show();
     }
 
-    private void removePdfItemFromUI(PdfItem item) {
+    public void removePdfItemFromUI(PdfItem item) {
         int index = pdfItemList.indexOf(item);
         if (index != -1) {
             pdfItemList.remove(index);
@@ -239,7 +222,6 @@ public class MainUIManager {
         }
     }
 
-    // 🌟 核心优化 1：清空方法彻底解耦，不自动跑默认空提示
     public void clearList() {
         int size = pdfItemList.size();
         if (size > 0) {
@@ -250,7 +232,6 @@ public class MainUIManager {
         tvEmptyState.setVisibility(View.GONE);
     }
 
-    // 🌟 新增：显式控制中间缓冲态“搜索中...”
     public void showSearchingState() {
         recyclerView.setVisibility(View.GONE);
         tvEmptyState.setVisibility(View.VISIBLE);
@@ -258,7 +239,6 @@ public class MainUIManager {
         tvEmptyState.setClickable(false);
     }
 
-    // 🌟 新增：显式注入自定义空文案与事件挂载状态
     public void showEmptyState(String message, boolean clickable) {
         recyclerView.setVisibility(View.GONE);
         tvEmptyState.setVisibility(View.VISIBLE);
@@ -266,7 +246,6 @@ public class MainUIManager {
         tvEmptyState.setClickable(clickable);
     }
 
-    // 🌟 新增：显式开关右下角浮动加号
     public void showFab(boolean visible) {
         if (fabAdd != null) {
             fabAdd.setVisibility(visible ? View.VISIBLE : View.GONE);
@@ -274,7 +253,6 @@ public class MainUIManager {
     }
 
     public void showEmptyStateByMode() {
-        // 🌟 确保列表隐藏，文字浮现
         recyclerView.setVisibility(View.GONE);
         tvEmptyState.setVisibility(View.VISIBLE);
 
@@ -293,8 +271,6 @@ public class MainUIManager {
     public void addPdfItem(PdfItem item) {
         pdfItemList.add(item);
         adapter.notifyItemInserted(pdfItemList.size() - 1);
-
-        // 🌟 核心修正：只要有文件被添加进来，无条件强制让 RecyclerView 显示，让空提示隐藏
         tvEmptyState.setVisibility(View.GONE);
         recyclerView.setVisibility(View.VISIBLE);
     }
@@ -370,12 +346,11 @@ public class MainUIManager {
             }
         });
 
-        // 🌟 核心修改 2：加入 ActionExpand 侦听接力，捕捉点击放大镜图标的一瞬间
         searchItem.setOnActionExpandListener(new MenuItem.OnActionExpandListener() {
             @Override
             public boolean onMenuItemActionExpand(MenuItem item) {
                 if (activity instanceof MainActivity) {
-                    ((MainActivity) activity).enterSearchMode(); // 展开即锁死当前背景模式
+                    ((MainActivity) activity).enterSearchMode();
                 }
                 return true;
             }

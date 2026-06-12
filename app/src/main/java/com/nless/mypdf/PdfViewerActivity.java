@@ -695,13 +695,22 @@ public class PdfViewerActivity extends AppCompatActivity {
     private void toggleMenuVisibility() {
         if (isEditMode) return;
         isMenuVisible = !isMenuVisible;
+
         if (isMenuVisible) {
+            // 🌟 恢复显示：显示顶部状态栏和底部系统导航栏
             getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+
             topMenuLayout.setVisibility(View.VISIBLE);
             topMenuLayout.setTranslationY(-topMenuLayout.getHeight());
             topMenuLayout.animate().translationY(0).setDuration(250).start();
         } else {
-            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+            // 🌟 终极沉浸式全屏：同时隐藏顶部状态栏 + 底部导航栏，且支持边缘滑动临时唤出
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            );
+
             topMenuLayout.animate().translationY(-topMenuLayout.getHeight()).setDuration(250)
                     .withEndAction(() -> topMenuLayout.setVisibility(View.GONE)).start();
         }
