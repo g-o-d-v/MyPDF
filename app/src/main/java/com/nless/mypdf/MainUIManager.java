@@ -1,6 +1,7 @@
 package com.nless.mypdf;
 
 import android.content.Intent;
+import android.net.Uri;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
@@ -124,6 +125,14 @@ public class MainUIManager {
                     intent.putExtra("pdf_uri", item.uri.toString());
                     intent.putExtra("pdf_path", item.path);
                     intent.putExtra("pdf_name", item.name);
+
+                    if (activity instanceof MainActivity) {
+                        MainActivity mainAct = (MainActivity) activity;
+                        if (mainAct.getCurrentMode() == MainActivity.MODE_FOLDER && mainAct.getCurrentFolderUri() != null) {
+                            intent.putExtra("parent_uri", mainAct.getCurrentFolderUri().toString());
+                        }
+                    }
+
                     activity.startActivity(intent);
                 } else {
                     if (activity instanceof MainActivity) {
@@ -148,7 +157,6 @@ public class MainUIManager {
             currentMode = ((MainActivity) activity).getCurrentMode();
         }
 
-        // 1. 最近查看页面专属菜单
         if (currentMode == MainActivity.MODE_RECENT) {
             popup.getMenu().add(Menu.NONE, 0, 0, "从历史记录移除");
             popup.setOnMenuItemClickListener(menuItem -> {
@@ -161,7 +169,6 @@ public class MainUIManager {
             return;
         }
 
-        // 2. 权限分流器：不同模式显示不同的移除文案
         if (currentMode == MainActivity.MODE_HOME || currentMode == MainActivity.MODE_FOLDER) {
             popup.getMenu().add(Menu.NONE, 1, 0, "从列表中移除");
         } else if (currentMode == MainActivity.MODE_FAVORITE) {
@@ -176,7 +183,7 @@ public class MainUIManager {
             if (mainAct == null) return true;
 
             switch (menuItem.getItemId()) {
-                case 1: // 移除
+                case 1:
                     if (mainAct.getCurrentMode() == MainActivity.MODE_HOME || mainAct.getCurrentMode() == MainActivity.MODE_FOLDER) {
                         new AlertDialog.Builder(activity)
                                 .setTitle("确认移除")
@@ -192,7 +199,7 @@ public class MainUIManager {
                         Toast.makeText(activity, "已取消收藏", Toast.LENGTH_SHORT).show();
                     }
                     break;
-                case 2: // 彻底删除
+                case 2:
                     new AlertDialog.Builder(activity)
                             .setTitle("警告：彻底删除")
                             .setMessage("该操作将永久删除磁盘上的此文件，不可恢复！确认删除吗？")
@@ -202,7 +209,7 @@ public class MainUIManager {
                             .setNegativeButton("取消", null)
                             .show();
                     break;
-                case 3: // 详情
+                case 3:
                     mainAct.showFileDetailsDialog(item);
                     break;
             }
@@ -230,6 +237,15 @@ public class MainUIManager {
         }
         recyclerView.setVisibility(View.GONE);
         tvEmptyState.setVisibility(View.GONE);
+    }
+
+    // 🌟 新增：友好的加载中提示UI
+    public void showLoadingState() {
+        recyclerView.setVisibility(View.GONE);
+        tvEmptyState.setVisibility(View.VISIBLE);
+        tvEmptyState.setText("加载中，请稍候...");
+        tvEmptyState.setClickable(false);
+        if (fabAdd != null) fabAdd.setVisibility(View.GONE);
     }
 
     public void showSearchingState() {

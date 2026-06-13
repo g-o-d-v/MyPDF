@@ -16,6 +16,7 @@ import android.widget.Toast;
 import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.documentfile.provider.DocumentFile;
 
 import com.github.barteksc.pdfviewer.PDFView;
 
@@ -31,7 +32,9 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 public class PdfViewerActivity extends AppCompatActivity {
@@ -44,11 +47,19 @@ public class PdfViewerActivity extends AppCompatActivity {
     private boolean isEditMode = false;
     private boolean isMenuVisible = true;
 
+    private boolean isAtLastPage = false;
+
     private String currentFileName = "未命名";
     private String pdfPath = "";
     private String pdfName = "";
     private Uri pdfUri;
+    private String parentUriStr = null;
     private String rawModifiedTime = "";
+
+    // 🌟 全新异步预加载引擎参数：存储后台提前计算好的下一卷数据
+    private Uri preloadedNextUri = null;
+    private String preloadedNextPath = "";
+    private String preloadedNextName = "";
 
     private PdfDbHelper dbHelper;
     private PDFView pdfView;
@@ -312,6 +323,7 @@ public class PdfViewerActivity extends AppCompatActivity {
         String uriString = getIntent().getStringExtra("pdf_uri");
         pdfPath = getIntent().getStringExtra("pdf_path");
         pdfName = getIntent().getStringExtra("pdf_name");
+        parentUriStr = getIntent().getStringExtra("parent_uri");
 
         if (uriString != null) {
             pdfUri = Uri.parse(uriString);
@@ -325,13 +337,12 @@ public class PdfViewerActivity extends AppCompatActivity {
             }
 
             tvTopTitle.setText(currentFileName);
-            reloadPdfView(0); // 默认加载第 1 页
+            reloadPdfView(0);
         } else {
             finish();
         }
     }
 
-    // 🌟 核心抽离：将重载 PDF 的代码封装，以备“覆盖保存”后刷新使用
     private void reloadPdfView(int targetPageIndex) {
         pdfView.fromUri(pdfUri)
                 .defaultPage(targetPageIndex)
@@ -339,6 +350,15 @@ public class PdfViewerActivity extends AppCompatActivity {
                 .swipeHorizontal(false)
                 .onTap(e -> {
                     if (!isEditMode || currentEditState == EditState.DRAG) {
+                        // 🌟 核心唤醒：如果处于最后一页，且预加载完成，点击右侧秒切下一卷！
+                        if (isAtLastPage && e.getX() > pdfView.getWidth() * 0.8f) {
+                            if (preloadedNextUri != null) {
+                                executeLoadNextVolume();
+                            } else {
+                                Toast.makeText(PdfViewerActivity.this, "已经是本系列的最后一卷啦", Toast.LENGTH_SHORT).show();
+                            }
+                            return true;
+                        }
                         toggleMenuVisibility();
                     }
                     return true;
@@ -347,15 +367,124 @@ public class PdfViewerActivity extends AppCompatActivity {
                     if (!isEditMode) {
                         tvTopTitle.setText(currentFileName + " (" + (page + 1) + "/" + pageCount + ")");
                     }
+                    isAtLastPage = (page == pageCount - 1);
+
+                    // 🌟 提前预判提示：刚刚翻到底部时，如果发现预加载已准备就绪，友好提示用户
+                    if (isAtLastPage) {
+                        if (preloadedNextUri != null) {
+                            Toast.makeText(this, "点击右侧加载下一卷：" + preloadedNextName, Toast.LENGTH_SHORT).show();
+                        } else {
+                            Toast.makeText(this, "已经是最后一卷啦", Toast.LENGTH_SHORT).show();
+                        }
+                    }
                 })
                 .onLoad(nbPages -> {
                     if (!isEditMode) {
                         tvTopTitle.setText(currentFileName + " (" + (targetPageIndex + 1) + "/" + nbPages + ")");
                     }
+                    isAtLastPage = (targetPageIndex == nbPages - 1);
                     rawModifiedTime = new SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.getDefault()).format(new Date());
+
+                    // 🌟 终极优化引擎发动：只要当前的 PDF 读取成功渲染出来，后台立刻去寻找下一卷！
+                    preloadNextVolumeInfo();
                 })
                 .load();
     }
+
+    // =========================================================================
+    // 🌟 终极预加载引擎：在用户看当前卷时，后台默默去扫盘把下一卷的全部信息算好
+    // =========================================================================
+    private void preloadNextVolumeInfo() {
+        preloadedNextUri = null;
+        preloadedNextPath = "";
+        preloadedNextName = "";
+
+        new Thread(() -> {
+            try {
+                List<String> siblings = new ArrayList<>();
+
+                if (parentUriStr != null && !parentUriStr.isEmpty()) {
+                    DocumentFile folder = DocumentFile.fromTreeUri(this, Uri.parse(parentUriStr));
+                    if (folder != null && folder.exists()) {
+                        for (DocumentFile f : folder.listFiles()) {
+                            if (!f.isDirectory() && f.getName() != null && f.getName().toLowerCase().endsWith(".pdf")) {
+                                siblings.add(f.getName());
+                            }
+                        }
+                    }
+                }
+                else if (pdfPath != null && !pdfPath.isEmpty()) {
+                    File currentFile = new File(pdfPath);
+                    File parentDir = currentFile.getParentFile();
+                    if (parentDir != null && parentDir.exists() && parentDir.isDirectory()) {
+                        File[] files = parentDir.listFiles();
+                        if (files != null) {
+                            for (File f : files) {
+                                if (f.getName().toLowerCase().endsWith(".pdf")) {
+                                    siblings.add(f.getName());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                String nextFileName = SmartVolumeSniffer.findNextVolume(pdfName, siblings);
+
+                if (nextFileName != null) {
+                    if (parentUriStr != null && !parentUriStr.isEmpty()) {
+                        DocumentFile folder = DocumentFile.fromTreeUri(this, Uri.parse(parentUriStr));
+                        if (folder != null) {
+                            for (DocumentFile f : folder.listFiles()) {
+                                if (nextFileName.equals(f.getName())) {
+                                    preloadedNextUri = f.getUri();
+                                    preloadedNextPath = MainActivity.cleanPath(preloadedNextUri.getPath());
+                                    preloadedNextName = nextFileName;
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        File nextFile = new File(new File(pdfPath).getParentFile(), nextFileName);
+                        if (nextFile.exists()) {
+                            preloadedNextUri = Uri.fromFile(nextFile);
+                            preloadedNextPath = nextFile.getAbsolutePath();
+                            preloadedNextName = nextFileName;
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }).start();
+    }
+
+    // 真正执行加载动作：由于在后台已经把数据全算好了，这里直接无脑读取，0延迟！
+    private void executeLoadNextVolume() {
+        Toast.makeText(this, "正在无缝加载: " + preloadedNextName, Toast.LENGTH_SHORT).show();
+
+        pdfPath = preloadedNextPath;
+        pdfName = preloadedNextName;
+        pdfUri = preloadedNextUri;
+
+        currentFileName = pdfName;
+        if (currentFileName.toLowerCase().endsWith(".pdf")) {
+            currentFileName = currentFileName.substring(0, currentFileName.length() - 4);
+        }
+        if (currentFileName.contains("-副本")) {
+            currentFileName = currentFileName.split("-副本")[0];
+        }
+
+        if (dbHelper != null) {
+            String time = new SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.getDefault()).format(new Date());
+            PdfItem nextItem = new PdfItem(pdfUri, pdfName, pdfPath, time, false);
+            dbHelper.recordViewHistory(nextItem);
+        }
+
+        if (pdfOverlay != null) pdfOverlay.clearActions();
+        updateFavoriteIconState();
+        reloadPdfView(0);
+    }
+    // =========================================================================
 
     private void toggleEditMode(boolean enterEdit) {
         isEditMode = enterEdit;
@@ -394,7 +523,6 @@ public class PdfViewerActivity extends AppCompatActivity {
                 pdfOverlay.setFocusable(false);
             }
 
-            // 🌟 就是这极其关键的一行！退出编辑模式时，强行解开底层 PDF 的滑动锁！
             if (pdfView != null) {
                 pdfView.setSwipeEnabled(true);
             }
@@ -463,7 +591,6 @@ public class PdfViewerActivity extends AppCompatActivity {
     private void handleSaveAction() {
         new AlertDialog.Builder(this)
                 .setTitle("保存修改")
-                // 🌟 更新菜单文案
                 .setItems(new String[]{"覆盖原文件 (直接保存)", "另存为新文件 (副本)"}, (dialog, which) -> {
                     if (which == 0) {
                         executeOverwriteSave();
@@ -474,9 +601,6 @@ public class PdfViewerActivity extends AppCompatActivity {
                 .show();
     }
 
-    // =========================================================================================
-    // 🌟 终极功能 1：真正的“覆盖原文件”保存！
-    // =========================================================================================
     private void executeOverwriteSave() {
         if (pdfUri == null) return;
         if (pdfOverlay == null || pdfOverlay.isActionStackEmpty()) {
@@ -494,8 +618,6 @@ public class PdfViewerActivity extends AppCompatActivity {
         final float pageWidth = pdfView.getPageSize(0).getWidth();
         final float pageHeight = pdfView.getPageSize(0).getHeight();
         final float spacing = pdfView.getSpacingPx();
-
-        // 记住用户当前看的是哪一页，保存完好让他回到这里
         final int currentPage = pdfView.getCurrentPage();
 
         new Thread(() -> {
@@ -514,8 +636,6 @@ public class PdfViewerActivity extends AppCompatActivity {
 
                 PdfReader reader = new PdfReader(fis);
 
-                // 核心：我们不能直接在原文件上动刀，因为 PDFView 当前正占用着原文件。
-                // 方案：先在缓存文件夹生成一个“替身”修改版，搞定后用替身替换本尊！
                 File tempFile = new File(getCacheDir(), "temp_overwrite_" + System.currentTimeMillis() + ".pdf");
                 FileOutputStream tempFos = new FileOutputStream(tempFile);
 
@@ -542,11 +662,9 @@ public class PdfViewerActivity extends AppCompatActivity {
                 reader.close();
                 fis.close();
 
-                // 替身制作完成，现在用它强行覆盖原物理文件！
                 OutputStream originalOs = null;
                 try {
                     if ("content".equals(pdfUri.getScheme())) {
-                        // 使用 "rwt" 权限表示覆盖并截断旧文件
                         originalOs = getContentResolver().openOutputStream(pdfUri, "rwt");
                         if (originalOs == null) originalOs = getContentResolver().openOutputStream(pdfUri);
                     } else {
@@ -560,7 +678,6 @@ public class PdfViewerActivity extends AppCompatActivity {
 
                 if (originalOs == null) throw new Exception("没有原文件的写入/覆盖权限，请使用另存为功能");
 
-                // 流对拷：把替身的数据灌回原文件中
                 FileInputStream tempFis = new FileInputStream(tempFile);
                 byte[] buffer = new byte[8192];
                 int len;
@@ -571,10 +688,8 @@ public class PdfViewerActivity extends AppCompatActivity {
                 originalOs.close();
                 tempFis.close();
 
-                // 销毁缓存替身
                 tempFile.delete();
 
-                // 通知系统刷新这个被修改的文件
                 if (pdfPath != null && !pdfPath.isEmpty()) {
                     MediaScannerConnection.scanFile(this, new String[]{pdfPath}, new String[]{"application/pdf"}, null);
                 }
@@ -586,8 +701,6 @@ public class PdfViewerActivity extends AppCompatActivity {
                     }
                     Toast.makeText(this, "保存成功！已覆盖原文件", Toast.LENGTH_LONG).show();
 
-                    // 🌟 覆盖保存的最关键一步：关闭编辑模式并重载页面！
-                    // 因为原文件底层物理数据变了，必须让阅读器重新读一次，才能显示出“焊死”的涂鸦！
                     toggleEditMode(false);
                     reloadPdfView(currentPage);
                 });
@@ -601,9 +714,7 @@ public class PdfViewerActivity extends AppCompatActivity {
             }
         }).start();
     }
-    // =========================================================================================
-    // 🌟 另存为功能（已修复：恢复存入安全的私有沙盒目录）
-    // =========================================================================================
+
     private void executeiTextFastMerge() {
         if (pdfUri == null) return;
         if (pdfOverlay == null || pdfOverlay.isActionStackEmpty()) {
@@ -641,7 +752,6 @@ public class PdfViewerActivity extends AppCompatActivity {
                 String timeStamp = new SimpleDateFormat("HHmmss", Locale.getDefault()).format(new Date());
                 String targetCopyName = currentFileName + "-副本-" + timeStamp + ".pdf";
 
-                // 🌟 核心修复：直接使用专属沙盒目录，彻底告别权限拒绝崩溃！
                 File destFile = new File(getExternalFilesDir(null), targetCopyName);
                 FileOutputStream fos = new FileOutputStream(destFile);
 
@@ -697,14 +807,12 @@ public class PdfViewerActivity extends AppCompatActivity {
         isMenuVisible = !isMenuVisible;
 
         if (isMenuVisible) {
-            // 🌟 恢复显示：显示顶部状态栏和底部系统导航栏
             getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
 
             topMenuLayout.setVisibility(View.VISIBLE);
             topMenuLayout.setTranslationY(-topMenuLayout.getHeight());
             topMenuLayout.animate().translationY(0).setDuration(250).start();
         } else {
-            // 🌟 终极沉浸式全屏：同时隐藏顶部状态栏 + 底部导航栏，且支持边缘滑动临时唤出
             getWindow().getDecorView().setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_FULLSCREEN
                             | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION

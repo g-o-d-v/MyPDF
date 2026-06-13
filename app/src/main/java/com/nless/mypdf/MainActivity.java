@@ -31,6 +31,8 @@ import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
+import android.provider.DocumentsContract;
+import android.database.Cursor;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -49,8 +51,9 @@ public class MainActivity extends AppCompatActivity {
     private PdfItem pendingAuthItem;
     private String pendingAuthAction;
 
-    // 🌟 新增：全局异步任务令牌！用 volatile 保证多线程立即可见
     private volatile long currentTaskToken = 0;
+
+    private Uri currentFolderUri = null;
 
     private final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.getDefault());
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
@@ -59,12 +62,15 @@ public class MainActivity extends AppCompatActivity {
         return currentMode;
     }
 
+    public Uri getCurrentFolderUri() {
+        return currentFolderUri;
+    }
+
     public static String cleanPath(String rawPath) {
         if (rawPath == null) return "";
         try {
             rawPath = java.net.URLDecoder.decode(rawPath, "UTF-8");
         } catch (Exception e) {
-            // 降级
         }
         if (rawPath.contains(":")) {
             return rawPath.substring(rawPath.lastIndexOf(":") + 1);
@@ -180,6 +186,9 @@ public class MainActivity extends AppCompatActivity {
                             getContentResolver().takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
                         } catch (SecurityException ignore) {}
 
+                        // 🌟 添加文件夹属于较重的操作，加入提示
+                        uiManager.showLoadingState();
+
                         executorService.execute(() -> {
                             DocumentFile documentFile = DocumentFile.fromTreeUri(this, treeUri);
                             if (documentFile != null && documentFile.exists()) {
@@ -203,9 +212,13 @@ public class MainActivity extends AppCompatActivity {
                                     dbHelper.insertOrUpdateHomeItem(item);
                                     runOnUiThread(this::loadHomeData);
                                 } else {
-                                    runOnUiThread(() -> Toast.makeText(MainActivity.this,
-                                            "该文件夹层不包含直接的 PDF 文件，无法添加", Toast.LENGTH_LONG).show());
+                                    runOnUiThread(() -> {
+                                        Toast.makeText(MainActivity.this, "该文件夹不包含 PDF 文件", Toast.LENGTH_LONG).show();
+                                        loadHomeData();
+                                    });
                                 }
+                            } else {
+                                runOnUiThread(this::loadHomeData);
                             }
                         });
                     }
@@ -356,8 +369,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void loadHomeData() {
-        currentTaskToken++; // 🌟 发放新令牌：每次进入首页，废除之前的任何后台加载！
+        currentTaskToken++;
         currentMode = MODE_HOME;
+        currentFolderUri = null;
         uiManager.clearList();
         uiManager.setShowPath(true);
         uiManager.setRecentMode(false);
@@ -378,7 +392,7 @@ public class MainActivity extends AppCompatActivity {
         } else {
             uiManager.clearList();
             uiManager.setupAsHomeView();
-            loadHomeData(); // 这会改变全局 Token
+            loadHomeData();
         }
     }
 
@@ -392,62 +406,99 @@ public class MainActivity extends AppCompatActivity {
     public void exitSearchMode() {
         uiManager.clearList();
         if (preSearchMode == MODE_RECENT) {
-            loadRecentData(); // 这也会改变全局 Token
+            loadRecentData();
         } else {
             uiManager.setupAsHomeView();
             loadHomeData();
         }
     }
 
+    // =========================================================================
+    // 🌟 终极极速加载引擎：彻底抛弃缓慢的 DocumentFile 遍历，采用 Cursor 批量寻址
+    // =========================================================================
+    // =========================================================================
+    // 🌟 终极极速加载引擎：修复 Tree URI 解析异常，完美匹配 SAF 文件夹
+    // =========================================================================
     private void loadFolderContents(Uri folderUri, String folderName) {
-        final long myToken = ++currentTaskToken; // 🌟 领走本次的专属任务令牌
+        final long myToken = ++currentTaskToken;
+
+        // 🌟 显示加载中，速度极快通常只会闪现一下
+        uiManager.showLoadingState();
 
         executorService.execute(() -> {
-            DocumentFile folder = DocumentFile.fromTreeUri(this, folderUri);
-            if (folder != null && folder.exists() && folder.isDirectory()) {
-                DocumentFile[] files = folder.listFiles();
-                if (files == null || files.length == 0) {
-                    runOnUiThread(() -> {
-                        if (myToken == currentTaskToken) uiManager.showEmptyState("没有文件", false);
-                    });
-                    return;
-                }
-                boolean addedAny = false;
-                Arrays.sort(files, (f1, f2) -> {
-                    String name1 = f1.getUri().getLastPathSegment();
-                    String name2 = f2.getUri().getLastPathSegment();
-                    return name1.compareTo(name2);
-                });
+            List<PdfItem> tempFiles = new ArrayList<>();
+            android.database.Cursor cursor = null; // 使用完整路径，无需去顶部导包
+            try {
+                // 🌟 核心修复点：提取文件夹树的 ID，必须用 getTreeDocumentId！
+                String folderId = android.provider.DocumentsContract.getTreeDocumentId(folderUri);
+                Uri childrenUri = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(folderUri, folderId);
 
-                for (DocumentFile file : files) {
-                    if (myToken != currentTaskToken) return; // 🌟 核心拦截：一旦用户按了返回键切走，线程直接自杀，绝不污染UI！
+                // 2. 告诉系统我们只需要这几个核心字段，拒绝冗余垃圾信息
+                String[] projection = new String[]{
+                        android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE,
+                        android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED
+                };
 
-                    if (!file.isDirectory()) {
-                        boolean isPdf = "application/pdf".equals(file.getType()) ||
-                                (file.getName() != null && file.getName().toLowerCase().endsWith(".pdf"));
-                        if (isPdf) {
-                            String name = file.getName();
-                            String realPath = cleanPath(file.getUri().getPath());
+                // 3. 一次性把整个文件夹的属性拉回内存 (极速 O(1) 操作)
+                cursor = getContentResolver().query(childrenUri, projection, null, null, null);
 
+                if (cursor != null) {
+                    while (cursor.moveToNext()) {
+                        if (myToken != currentTaskToken) break; // 令牌过期直接中断
+
+                        String docId = cursor.getString(0);
+                        String name = cursor.getString(1);
+                        String mimeType = cursor.getString(2);
+                        long lastModified = cursor.getLong(3);
+
+                        // 4. 判断是否是 PDF
+                        boolean isPdf = "application/pdf".equals(mimeType) ||
+                                (name != null && name.toLowerCase().endsWith(".pdf"));
+
+                        if (isPdf && name != null) {
+                            // 极速构建单个文件的专属 URI
+                            Uri fileUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(folderUri, docId);
+                            String realPath = cleanPath(fileUri.getPath());
+
+                            // 排除检测
                             if (dbHelper != null && dbHelper.isFileExcluded(realPath, name)) {
                                 continue;
                             }
 
-                            String time = dateFormat.format(new Date(file.lastModified()));
-                            PdfItem item = new PdfItem(file.getUri(), name != null ? name : "未知文件", realPath, time, false);
-
-                            // 投递到 UI 前再核对一次令牌，确保绝对安全
-                            runOnUiThread(() -> {
-                                if (myToken == currentTaskToken) {
-                                    uiManager.addPdfItem(item);
-                                }
-                            });
-                            addedAny = true;
+                            String time = dateFormat.format(new Date(lastModified));
+                            tempFiles.add(new PdfItem(fileUri, name, realPath, time, false));
                         }
                     }
                 }
-                if (!addedAny) runOnUiThread(() -> {
-                    if (myToken == currentTaskToken) uiManager.showEmptyState("没有文件", false);
+            } catch (Exception e) {
+                e.printStackTrace();
+            } finally {
+                // 🌟 必须关闭游标防止内存泄漏
+                if (cursor != null) {
+                    cursor.close();
+                }
+            }
+
+            if (myToken != currentTaskToken) return;
+
+            // 5. 在内存中完成极速“自然语义”排序
+            if (!tempFiles.isEmpty()) {
+                java.util.Collections.sort(tempFiles, (item1, item2) -> {
+                    String n1 = item1.name != null ? item1.name : "";
+                    String n2 = item2.name != null ? item2.name : "";
+                    return new SmartVolumeSniffer.NaturalComparator().compare(n1, n2);
+                });
+
+                // 6. 排序完成后，一次性推送到主线程 UI 上，彻底消灭逐个添加带来的界面卡顿
+                runOnUiThread(() -> {
+                    if (myToken == currentTaskToken) {
+                        uiManager.clearList();
+                        for (PdfItem item : tempFiles) {
+                            uiManager.addPdfItem(item);
+                        }
+                    }
                 });
             } else {
                 runOnUiThread(() -> {
@@ -459,6 +510,7 @@ public class MainActivity extends AppCompatActivity {
 
     public void switchToFolderView(PdfItem folderItem) {
         currentMode = MODE_FOLDER;
+        currentFolderUri = folderItem.uri;
         uiManager.clearList();
         uiManager.setShowPath(false);
         uiManager.setRecentMode(false);
@@ -467,7 +519,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void loadRecentData() {
-        currentTaskToken++; // 🌟 刷新令牌
+        currentTaskToken++;
         currentMode = MODE_RECENT;
         uiManager.clearList();
         uiManager.setShowPath(true);
@@ -505,7 +557,7 @@ public class MainActivity extends AppCompatActivity {
 
     public void performSearch(String keyword) {
         if (dbHelper == null || keyword.trim().isEmpty()) return;
-        final long myToken = ++currentTaskToken; // 🌟 搜索任务也领取令牌
+        final long myToken = ++currentTaskToken;
 
         if (currentMode == MODE_RECENT || (currentMode == MODE_SEARCH && preSearchMode == MODE_RECENT)) {
             List<PdfItem> currentRecents = dbHelper.getRecentItems();
@@ -519,13 +571,13 @@ public class MainActivity extends AppCompatActivity {
             executorService.execute(() -> {
                 List<PdfItem> results = new ArrayList<>();
                 for (PdfItem item : currentRecents) {
-                    if (myToken != currentTaskToken) return; // 🌟 过期拦截
+                    if (myToken != currentTaskToken) return;
                     if (item.name.toLowerCase().contains(keyword.toLowerCase())) {
                         results.add(item);
                     }
                 }
                 runOnUiThread(() -> {
-                    if (myToken != currentTaskToken) return; // 🌟 UI拦截
+                    if (myToken != currentTaskToken) return;
                     uiManager.clearList();
                     if (results.isEmpty()) {
                         uiManager.showEmptyState("没有文件", false);
@@ -556,7 +608,7 @@ public class MainActivity extends AppCompatActivity {
             HashSet<String> uniqueFileRegistry = new HashSet<>();
 
             for (PdfItem item : allHomeItems) {
-                if (myToken != currentTaskToken) return; // 🌟 过期拦截
+                if (myToken != currentTaskToken) return;
 
                 if (!item.isFolder) {
                     if (item.name.toLowerCase().contains(lowerKeyword)) {
@@ -572,7 +624,7 @@ public class MainActivity extends AppCompatActivity {
                         DocumentFile[] files = folder.listFiles();
                         if (files != null) {
                             for (DocumentFile file : files) {
-                                if (myToken != currentTaskToken) return; // 🌟 深度嵌套时也要拦截
+                                if (myToken != currentTaskToken) return;
 
                                 if (!file.isDirectory() && file.getName() != null) {
                                     boolean isPdf = "application/pdf".equals(file.getType()) || file.getName().toLowerCase().endsWith(".pdf");
@@ -600,7 +652,7 @@ public class MainActivity extends AppCompatActivity {
             }
 
             runOnUiThread(() -> {
-                if (myToken != currentTaskToken) return; // 🌟 UI 拦截
+                if (myToken != currentTaskToken) return;
                 uiManager.clearList();
                 uiManager.updateTitle("搜索结果 (" + searchResults.size() + "条)");
 
@@ -635,7 +687,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void loadFavoriteData() {
-        currentTaskToken++; // 🌟 刷新令牌
+        currentTaskToken++;
         currentMode = MODE_FAVORITE;
         uiManager.clearList();
         uiManager.setShowPath(true);
