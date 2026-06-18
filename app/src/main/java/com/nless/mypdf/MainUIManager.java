@@ -310,7 +310,13 @@ public class MainUIManager {
         fabAdd.setVisibility(View.GONE);
         drawerLayout.setFitsSystemWindows(true);
         drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED);
-        toolbar.setNavigationIcon(androidx.appcompat.R.drawable.abc_ic_ab_back_material);
+
+        // 🌟 完美替代方案：使用原生的动态返回箭头，无需任何资源文件，自动适配主题颜色！
+        androidx.appcompat.graphics.drawable.DrawerArrowDrawable backArrow =
+                new androidx.appcompat.graphics.drawable.DrawerArrowDrawable(activity);
+        backArrow.setProgress(1.0f); // 进度 1.0f 代表完全变成“返回箭头”
+        toolbar.setNavigationIcon(backArrow);
+
         toolbar.setNavigationOnClickListener(v -> activity.onBackPressed());
     }
 

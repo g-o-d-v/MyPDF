@@ -34,6 +34,12 @@ public class PdfOverlayView extends View {
 
     private PDFView pdfView;
 
+    private final java.util.List<SearchHighlight> searchHighlights = new java.util.ArrayList<>();
+
+    private final Paint searchPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint currentSearchPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private int currentSearchIndex = -1;
+
     public interface OnTextRequestListener {
         void onRequestText(float docX, float docY);
     }
@@ -41,6 +47,45 @@ public class PdfOverlayView extends View {
 
     public PdfOverlayView(Context context, AttributeSet attrs) {
         super(context, attrs);
+
+        searchPaint.setColor(0x66FFEB3B); // 半透明黄
+        searchPaint.setStyle(Paint.Style.FILL);
+
+        currentSearchPaint.setColor(0x99FF9800); // 当前命中橙色
+        currentSearchPaint.setStyle(Paint.Style.FILL);
+    }
+
+    public void setSearchHighlights(java.util.List<SearchHighlight> highlights) {
+        searchHighlights.clear();
+        if (highlights != null) {
+            searchHighlights.addAll(highlights);
+        }
+        currentSearchIndex = highlights == null || highlights.isEmpty() ? -1 : 0;
+        invalidate();
+    }
+
+    public void clearSearchHighlights() {
+        searchHighlights.clear();
+        currentSearchIndex = -1;
+        invalidate();
+    }
+
+    public void setCurrentSearchIndex(int index) {
+        if (index >= 0 && index < searchHighlights.size()) {
+            currentSearchIndex = index;
+        } else {
+            currentSearchIndex = -1;
+        }
+        invalidate();
+    }
+
+    public int getSearchHighlightCount() {
+        return searchHighlights.size();
+    }
+
+    public SearchHighlight getSearchHighlight(int index) {
+        if (index < 0 || index >= searchHighlights.size()) return null;
+        return searchHighlights.get(index);
     }
 
     public void setPdfView(PDFView pdfView) {
@@ -196,11 +241,22 @@ public class PdfOverlayView extends View {
         canvas.translate(pdfView.getCurrentXOffset(), pdfView.getCurrentYOffset());
         canvas.scale(pdfView.getZoom(), pdfView.getZoom());
 
+// 1. 先画搜索高亮
+        for (int i = 0; i < searchHighlights.size(); i++) {
+            SearchHighlight h = searchHighlights.get(i);
+            if (h == null || h.rectInDoc == null) continue;
+
+            Paint p = (i == currentSearchIndex) ? currentSearchPaint : searchPaint;
+            canvas.drawRect(h.rectInDoc, p);
+        }
+
+// 2. 再画用户批注
         for (DrawAction action : actionStack) {
             if (action.actionCategory == 0) canvas.drawPath(action.path, action.paint);
             else if (action.actionCategory == 1) drawShape(canvas, action.toolType, action.startX, action.startY, action.endX, action.endY, action.paint);
             else if (action.actionCategory == 2) canvas.drawText(action.text, action.x, action.y, action.paint);
         }
+
 
         if (isDrawing && currentPaint != null) {
             if (currentTool == ToolType.PENCIL || currentTool == ToolType.HIGHLIGHTER) {
@@ -280,6 +336,17 @@ public class PdfOverlayView extends View {
         canvas.restore();
         return bitmap;
     }
+
+    public static class SearchHighlight {
+        public final int pageIndex;
+        public final RectF rectInDoc;
+
+        public SearchHighlight(int pageIndex, RectF rectInDoc) {
+            this.pageIndex = pageIndex;
+            this.rectInDoc = rectInDoc;
+        }
+    }
+
 
     private static class DrawAction {
         int actionCategory; Paint paint; Path path;
