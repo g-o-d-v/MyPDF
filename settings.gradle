@@ -35,4 +35,3 @@ dependencyResolutionManagement {
 // 替换为你的项目名称
 rootProject.name = "MyPDF"
 include ':app'
-include ':pdf-search-engine'
