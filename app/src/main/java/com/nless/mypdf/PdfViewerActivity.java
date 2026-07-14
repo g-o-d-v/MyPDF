@@ -1,5 +1,6 @@
 package com.nless.mypdf;
 
+import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.drawable.GradientDrawable;
@@ -19,6 +20,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.documentfile.provider.DocumentFile;
 
 import com.github.barteksc.pdfviewer.PDFView;
+//import com.github.barteksc.pdfviewer.scroll.DefaultScrollHandle; // 🌟 引入原生滑动条组件
 
 import com.itextpdf.text.Image;
 import com.itextpdf.text.pdf.PdfContentByte;
@@ -56,7 +58,7 @@ public class PdfViewerActivity extends AppCompatActivity {
     private String parentUriStr = null;
     private String rawModifiedTime = "";
 
-    // 🌟 全新异步预加载引擎参数：存储后台提前计算好的下一卷数据
+    // 异步预加载引擎参数
     private Uri preloadedNextUri = null;
     private String preloadedNextPath = "";
     private String preloadedNextName = "";
@@ -65,6 +67,8 @@ public class PdfViewerActivity extends AppCompatActivity {
     private PDFView pdfView;
     private PdfOverlayView pdfOverlay;
     private LinearLayout topMenuLayout;
+
+    private TextView btnNextVolume;
 
     private ImageView ivBackOrExit, ivUndo, ivFavorite, ivSave, ivEditMode;
     private TextView tvTopTitle;
@@ -91,6 +95,9 @@ public class PdfViewerActivity extends AppCompatActivity {
     private float lastPdfYOffset = 0;
     private float lastPdfZoom = 0;
 
+    // 🌟 新增：用来存储阅读进度的本地轻量级文件（不碰数据库）
+    private SharedPreferences progressPrefs;
+
     private final int[] colorViewIds = {
             R.id.color_black, R.id.color_white, R.id.color_gray, R.id.color_red,
             R.id.color_yellow, R.id.color_green, R.id.color_blue, R.id.color_purple,
@@ -111,6 +118,9 @@ public class PdfViewerActivity extends AppCompatActivity {
         setContentView(R.layout.activity_pdf_viewer);
 
         dbHelper = new PdfDbHelper(this);
+        // 🌟 初始化轻量级进度存储
+        progressPrefs = getSharedPreferences("pdf_reading_progress", MODE_PRIVATE);
+
         initViews();
         setupListeners();
         loadPdfFromIntent();
@@ -157,6 +167,34 @@ public class PdfViewerActivity extends AppCompatActivity {
         if (pdfOverlay != null) {
             pdfOverlay.setPdfView(pdfView);
         }
+
+        btnNextVolume = new TextView(this);
+        btnNextVolume.setTextColor(android.graphics.Color.WHITE);
+        btnNextVolume.setTextSize(14f);
+        btnNextVolume.setPadding(60, 30, 60, 30);
+        btnNextVolume.setGravity(android.view.Gravity.CENTER);
+
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(0xDD333333);
+        gd.setCornerRadius(100f);
+        gd.setStroke(2, 0x55FFFFFF);
+        btnNextVolume.setBackground(gd);
+        btnNextVolume.setElevation(15f);
+        btnNextVolume.setVisibility(View.GONE);
+
+        btnNextVolume.setOnClickListener(v -> {
+            if (preloadedNextUri != null) executeLoadNextVolume();
+        });
+
+        android.widget.FrameLayout contentRoot = findViewById(android.R.id.content);
+        android.widget.FrameLayout.LayoutParams params = new android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
+        );
+        params.gravity = android.view.Gravity.BOTTOM | android.view.Gravity.END;
+        params.bottomMargin = 150;
+        params.rightMargin = 60;
+        contentRoot.addView(btnNextVolume, params);
 
         pdfView.getViewTreeObserver().addOnPreDrawListener(() -> {
             if (pdfView != null && pdfOverlay != null) {
@@ -226,6 +264,23 @@ public class PdfViewerActivity extends AppCompatActivity {
                 handleBackAction();
             }
         });
+    }
+
+    private void updateNextVolumeButtonState() {
+        if (isAtLastPage && preloadedNextUri != null && !isEditMode) {
+            if (btnNextVolume.getVisibility() != View.VISIBLE) {
+                btnNextVolume.setText("下一卷：\n" + preloadedNextName + "  〉");
+                btnNextVolume.setAlpha(0f);
+                btnNextVolume.setTranslationX(150f);
+                btnNextVolume.setVisibility(View.VISIBLE);
+                btnNextVolume.animate().alpha(1f).translationX(0f).setDuration(350).start();
+            }
+        } else {
+            if (btnNextVolume.getVisibility() == View.VISIBLE) {
+                btnNextVolume.animate().alpha(0f).translationX(150f).setDuration(250)
+                        .withEndAction(() -> btnNextVolume.setVisibility(View.GONE)).start();
+            }
+        }
     }
 
     private void showToolPopup(View anchor, TextView targetText, String[] options) {
@@ -337,7 +392,10 @@ public class PdfViewerActivity extends AppCompatActivity {
             }
 
             tvTopTitle.setText(currentFileName);
-            reloadPdfView(0);
+
+            // 🌟 读取无侵入式的历史阅读进度
+            int lastReadPage = progressPrefs.getInt(pdfUri.toString(), 0);
+            reloadPdfView(lastReadPage);
         } else {
             finish();
         }
@@ -348,17 +406,15 @@ public class PdfViewerActivity extends AppCompatActivity {
                 .defaultPage(targetPageIndex)
                 .enableSwipe(true)
                 .swipeHorizontal(false)
+//                .scrollHandle(new DefaultScrollHandle(this))
+                .enableAntialiasing(false)
+                .pageFitPolicy(com.github.barteksc.pdfviewer.util.FitPolicy.WIDTH)
+                .fitEachPage(true)
+                .autoSpacing(false)
+                .pageSnap(false)
+                .pageFling(false)
                 .onTap(e -> {
                     if (!isEditMode || currentEditState == EditState.DRAG) {
-                        // 🌟 核心唤醒：如果处于最后一页，且预加载完成，点击右侧秒切下一卷！
-                        if (isAtLastPage && e.getX() > pdfView.getWidth() * 0.8f) {
-                            if (preloadedNextUri != null) {
-                                executeLoadNextVolume();
-                            } else {
-                                Toast.makeText(PdfViewerActivity.this, "已经是本系列的最后一卷啦", Toast.LENGTH_SHORT).show();
-                            }
-                            return true;
-                        }
                         toggleMenuVisibility();
                     }
                     return true;
@@ -368,16 +424,46 @@ public class PdfViewerActivity extends AppCompatActivity {
                         tvTopTitle.setText(currentFileName + " (" + (page + 1) + "/" + pageCount + ")");
                     }
                     isAtLastPage = (page == pageCount - 1);
+                    updateNextVolumeButtonState();
 
-                    // 🌟 提前预判提示：刚刚翻到底部时，如果发现预加载已准备就绪，友好提示用户
-                    if (isAtLastPage) {
-                        if (preloadedNextUri != null) {
-                            Toast.makeText(this, "点击右侧加载下一卷：" + preloadedNextName, Toast.LENGTH_SHORT).show();
-                        } else {
-                            Toast.makeText(this, "已经是最后一卷啦", Toast.LENGTH_SHORT).show();
-                        }
+                    // 实时静默保存用户的阅读进度
+                    if (progressPrefs != null && pdfUri != null) {
+                        progressPrefs.edit().putInt(pdfUri.toString(), page).apply();
                     }
                 })
+                // =========================================================================
+                // 🌟 新增：物理触底探测器，完美解决“短页面导致无法判定为最后一页”的终极 Bug
+                // =========================================================================
+                .onPageScroll((page, positionOffset) -> {
+                    // canScrollVertically(1) 用于检测 View 是否还能向下滚动
+                    // 返回 false 说明已经被死死卡在最底部了，一像素都滚不动了
+                    boolean isPhysicallyAtBottom = !pdfView.canScrollVertically(1);
+                    int pageCount = pdfView.getPageCount();
+
+                    // 如果物理触底了，但系统页码算错了（以为还没到最后）
+                    if (isPhysicallyAtBottom && !isAtLastPage) {
+                        isAtLastPage = true;
+
+                        // 1. 强制修正顶部标题的页码显示
+                        if (!isEditMode) {
+                            tvTopTitle.setText(currentFileName + " (" + pageCount + "/" + pageCount + ")");
+                        }
+
+                        // 2. 强制唤醒“下一卷”悬浮胶囊
+                        updateNextVolumeButtonState();
+
+                        // 3. 强制把阅读进度记录为 100% 完结
+                        if (progressPrefs != null && pdfUri != null) {
+                            progressPrefs.edit().putInt(pdfUri.toString(), pageCount - 1).apply();
+                        }
+                    }
+                    // 补充防御机制：如果用户往回滑，离开了物理底部，并且系统当前页码确实不是最后一页，那就隐藏胶囊
+                    else if (!isPhysicallyAtBottom && isAtLastPage && page < pageCount - 1) {
+                        isAtLastPage = false;
+                        updateNextVolumeButtonState();
+                    }
+                })
+                // =========================================================================
                 .onLoad(nbPages -> {
                     if (!isEditMode) {
                         tvTopTitle.setText(currentFileName + " (" + (targetPageIndex + 1) + "/" + nbPages + ")");
@@ -385,15 +471,12 @@ public class PdfViewerActivity extends AppCompatActivity {
                     isAtLastPage = (targetPageIndex == nbPages - 1);
                     rawModifiedTime = new SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.getDefault()).format(new Date());
 
-                    // 🌟 终极优化引擎发动：只要当前的 PDF 读取成功渲染出来，后台立刻去寻找下一卷！
+                    updateNextVolumeButtonState();
                     preloadNextVolumeInfo();
                 })
                 .load();
     }
 
-    // =========================================================================
-    // 🌟 终极预加载引擎：在用户看当前卷时，后台默默去扫盘把下一卷的全部信息算好
-    // =========================================================================
     private void preloadNextVolumeInfo() {
         preloadedNextUri = null;
         preloadedNextPath = "";
@@ -452,14 +535,17 @@ public class PdfViewerActivity extends AppCompatActivity {
                         }
                     }
                 }
+
+                runOnUiThread(this::updateNextVolumeButtonState);
+
             } catch (Exception e) {
                 e.printStackTrace();
             }
         }).start();
     }
 
-    // 真正执行加载动作：由于在后台已经把数据全算好了，这里直接无脑读取，0延迟！
     private void executeLoadNextVolume() {
+        btnNextVolume.setVisibility(View.GONE);
         Toast.makeText(this, "正在无缝加载: " + preloadedNextName, Toast.LENGTH_SHORT).show();
 
         pdfPath = preloadedNextPath;
@@ -480,14 +566,21 @@ public class PdfViewerActivity extends AppCompatActivity {
             dbHelper.recordViewHistory(nextItem);
         }
 
-        if (pdfOverlay != null) pdfOverlay.clearActions();
+        if (pdfOverlay != null) {
+            pdfOverlay.clearActions();
+        }
+
         updateFavoriteIconState();
+
+        // 🌟 连卷时，不要读历史进度，强制从 0 (第1页) 开始看新的一卷！
         reloadPdfView(0);
     }
-    // =========================================================================
 
     private void toggleEditMode(boolean enterEdit) {
         isEditMode = enterEdit;
+
+        updateNextVolumeButtonState();
+
         if (isEditMode) {
             tvTopTitle.setText("编辑模式");
             ivBackOrExit.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
