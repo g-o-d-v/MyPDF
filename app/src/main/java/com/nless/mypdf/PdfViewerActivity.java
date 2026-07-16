@@ -1,12 +1,19 @@
 package com.nless.mypdf;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
-import android.graphics.Bitmap;
+import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Bundle;
+import android.view.ActionMode;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.MotionEvent;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -20,14 +27,17 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.documentfile.provider.DocumentFile;
 
 import com.github.barteksc.pdfviewer.PDFView;
+import com.nless.pdf_search_engine.androidpdfviewer.AndroidPdfViewerAdapter;
+import com.nless.pdf_search_engine.androidpdfviewer.PdfOverlaySearchHighlighter;
+import com.nless.pdf_search_engine.core.PdfSearchCallback;
+import com.nless.pdf_search_engine.core.PdfSearchManager;
+import com.nless.pdf_search_engine.core.PdfSearchMode;
+import com.nless.pdf_search_engine.core.PdfSearchOptions;
+import com.nless.pdf_search_engine.core.PdfSearchResult;
+import com.nless.pdf_search_engine.core.PdfSearchSource;
 //import com.github.barteksc.pdfviewer.scroll.DefaultScrollHandle; // 🌟 引入原生滑动条组件
 
-import com.itextpdf.text.Image;
-import com.itextpdf.text.pdf.PdfContentByte;
-import com.itextpdf.text.pdf.PdfReader;
-import com.itextpdf.text.pdf.PdfStamper;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -67,11 +77,13 @@ public class PdfViewerActivity extends AppCompatActivity {
     private PDFView pdfView;
     private PdfOverlayView pdfOverlay;
     private LinearLayout topMenuLayout;
+    private LinearLayout annotationPanelContainer;
+    private View pdfContentFrame;
 
     private TextView btnNextVolume;
 
-    private ImageView ivBackOrExit, ivUndo, ivFavorite, ivSave, ivEditMode;
-    private TextView tvTopTitle;
+    private ImageView ivBackOrExit, ivUndo, ivSave, ivMore;
+    private TextView tvTopTitle, tvAnnotationPageWarning;
     private View dividerLine;
     private LinearLayout llEditToolsRow;
     private ImageView ivToolDrag, ivToolDoodle, ivToolText;
@@ -98,6 +110,19 @@ public class PdfViewerActivity extends AppCompatActivity {
     // 🌟 新增：用来存储阅读进度的本地轻量级文件（不碰数据库）
     private SharedPreferences progressPrefs;
 
+    private final List<PdfOverlayView.SearchHighlight> currentSearchHighlights = new ArrayList<>();
+    private PdfSearchManager pdfSearchManager;
+    private AndroidPdfViewerAdapter androidPdfViewerAdapter;
+    private PdfOverlaySearchHighlighter overlaySearchHighlighter;
+
+    private PdfTextSelectionRepository textSelectionRepository;
+    private ActionMode textSelectionActionMode;
+    private int textSelectionRequestId = 0;
+
+    private static final int TEXT_ACTION_COPY = 201;
+    private static final int TEXT_ACTION_SELECT_ALL = 202;
+    private static final int TEXT_ACTION_CANCEL = 203;
+
     private final int[] colorViewIds = {
             R.id.color_black, R.id.color_white, R.id.color_gray, R.id.color_red,
             R.id.color_yellow, R.id.color_green, R.id.color_blue, R.id.color_purple,
@@ -118,13 +143,13 @@ public class PdfViewerActivity extends AppCompatActivity {
         setContentView(R.layout.activity_pdf_viewer);
 
         dbHelper = new PdfDbHelper(this);
+        pdfSearchManager = new PdfSearchManager(this);
         // 🌟 初始化轻量级进度存储
         progressPrefs = getSharedPreferences("pdf_reading_progress", MODE_PRIVATE);
 
         initViews();
         setupListeners();
         loadPdfFromIntent();
-        updateFavoriteIconState();
         updateAllColorBlocksUI();
     }
 
@@ -132,13 +157,15 @@ public class PdfViewerActivity extends AppCompatActivity {
         pdfView = findViewById(R.id.pdfView);
         pdfOverlay = findViewById(R.id.pdfOverlay);
         topMenuLayout = findViewById(R.id.top_menu_layout);
+        annotationPanelContainer = findViewById(R.id.annotation_panel_container);
+        pdfContentFrame = findViewById(R.id.pdf_content_frame);
 
         ivBackOrExit = findViewById(R.id.iv_back_or_exit);
         tvTopTitle = findViewById(R.id.tv_top_title);
+        tvAnnotationPageWarning = findViewById(R.id.tv_annotation_page_warning);
         ivUndo = findViewById(R.id.iv_undo);
-        ivFavorite = findViewById(R.id.iv_favorite);
         ivSave = findViewById(R.id.iv_save);
-        ivEditMode = findViewById(R.id.iv_edit_mode);
+        ivMore = findViewById(R.id.iv_more);
         dividerLine = findViewById(R.id.divider_line);
 
         llEditToolsRow = findViewById(R.id.ll_edit_tools_row);
@@ -162,10 +189,16 @@ public class PdfViewerActivity extends AppCompatActivity {
         seekTextSize = findViewById(R.id.seek_text_size);
 
         topMenuLayout.setVisibility(View.VISIBLE);
-        llEditToolsRow.setVisibility(View.GONE);
+        annotationPanelContainer.setVisibility(View.GONE);
+        llEditToolsRow.setVisibility(View.VISIBLE);
 
         if (pdfOverlay != null) {
             pdfOverlay.setPdfView(pdfView);
+            pdfOverlay.setOnTextSelectionChangedListener((active, selectedText) -> {
+                if (active && textSelectionActionMode != null) {
+                    textSelectionActionMode.invalidateContentRect();
+                }
+            });
         }
 
         btnNextVolume = new TextView(this);
@@ -214,9 +247,8 @@ public class PdfViewerActivity extends AppCompatActivity {
 
     private void setupListeners() {
         ivBackOrExit.setOnClickListener(v -> handleBackAction());
-        ivEditMode.setOnClickListener(v -> toggleEditMode(true));
+        ivMore.setOnClickListener(this::showMainMenu);
         ivSave.setOnClickListener(v -> handleSaveAction());
-        ivFavorite.setOnClickListener(v -> handleFavoriteToggle());
 
         ivUndo.setOnClickListener(v -> {
             if (pdfOverlay != null) pdfOverlay.undo();
@@ -280,6 +312,240 @@ public class PdfViewerActivity extends AppCompatActivity {
                 btnNextVolume.animate().alpha(0f).translationX(150f).setDuration(250)
                         .withEndAction(() -> btnNextVolume.setVisibility(View.GONE)).start();
             }
+        }
+    }
+
+    private void showPdfSearchDialog() {
+        final android.widget.EditText input = new android.widget.EditText(this);
+        input.setHint("输入搜索关键词");
+        input.setSingleLine(true);
+        new AlertDialog.Builder(this)
+                .setTitle("搜索 PDF 内容")
+                .setView(input)
+                .setPositiveButton("搜索", (dialog, which) -> {
+                    String keyword = input.getText().toString().trim();
+                    if (!keyword.isEmpty()) showSearchModeDialog(keyword);
+                })
+                .setNeutralButton("清除高亮", (dialog, which) -> clearPdfSearch())
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void showSearchModeDialog(String keyword) {
+        String[] modes = {
+                "智能当前页（文本优先，失败后 OCR）",
+                "文本层全文搜索",
+                "智能全文搜索（文本优先）",
+                "OCR 当前页"
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("选择搜索模式")
+                .setItems(modes, (dialog, which) -> {
+                    if (which == 0) searchWithEngine(keyword, PdfSearchMode.TEXT_THEN_OCR, true);
+                    else if (which == 1) searchWithEngine(keyword, PdfSearchMode.TEXT_ONLY, false);
+                    else if (which == 2) searchWithEngine(keyword, PdfSearchMode.TEXT_THEN_OCR, false);
+                    else searchWithEngine(keyword, PdfSearchMode.OCR_ONLY, true);
+                }).show();
+    }
+
+    private void searchWithEngine(String keyword, PdfSearchMode mode, boolean currentPageOnly) {
+        if (pdfSearchManager == null || pdfUri == null || pdfView == null || pdfOverlay == null) return;
+        clearPdfSearch(false);
+        PdfSearchOptions options = new PdfSearchOptions();
+        options.mode = mode;
+        options.currentPageOnly = currentPageOnly;
+        options.currentPage = pdfView.getCurrentPage();
+        options.allowFullDocumentOcr = false;
+        options.ocrRenderWidth = 1280;
+        options.fallbackToOcrWhenTextNotFound = true;
+
+        pdfSearchManager.search(pdfUri, keyword, options, new PdfSearchCallback() {
+            @Override public void onSearchStarted(String value) {
+                runOnUiThread(() -> Toast.makeText(PdfViewerActivity.this, "正在搜索：" + value, Toast.LENGTH_SHORT).show());
+            }
+            @Override public void onSearchProgress(int currentPage, int totalPage, PdfSearchSource source) {
+                runOnUiThread(() -> tvTopTitle.setText((source == PdfSearchSource.OCR ? "OCR" : "文本") + "搜索中…"));
+            }
+            @Override public void onSearchCompleted(List<PdfSearchResult> results) {
+                runOnUiThread(() -> showSearchResults(keyword, results));
+            }
+            @Override public void onSearchFailed(Throwable error) {
+                runOnUiThread(() -> Toast.makeText(PdfViewerActivity.this, "搜索失败：" + safeMessage(error), Toast.LENGTH_LONG).show());
+            }
+            @Override public void onSearchCancelled() { }
+        });
+    }
+
+    private void showSearchResults(String keyword, List<PdfSearchResult> results) {
+        int page = pdfView.getCurrentPage();
+        tvTopTitle.setText(currentFileName + " (" + (page + 1) + "/" + pdfView.getPageCount() + ")");
+        if (results == null || results.isEmpty()) {
+            Toast.makeText(this, "未找到：" + keyword, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (androidPdfViewerAdapter == null) androidPdfViewerAdapter = new AndroidPdfViewerAdapter(pdfView);
+        if (overlaySearchHighlighter == null) overlaySearchHighlighter = new PdfOverlaySearchHighlighter();
+        List<AndroidPdfViewerAdapter.ViewerSearchHighlight> converted = androidPdfViewerAdapter.convertResults(results);
+        overlaySearchHighlighter.setHighlights(converted);
+        currentSearchHighlights.clear();
+        for (AndroidPdfViewerAdapter.ViewerSearchHighlight item : converted) {
+            if (item != null && item.rectInDoc != null) {
+                currentSearchHighlights.add(new PdfOverlayView.SearchHighlight(item.pageIndex, item.rectInDoc));
+            }
+        }
+        pdfOverlay.setSearchHighlights(currentSearchHighlights);
+        AndroidPdfViewerAdapter.ViewerSearchHighlight first = overlaySearchHighlighter.getCurrent();
+        if (first != null) pdfView.jumpTo(first.pageIndex, true);
+        Toast.makeText(this, "找到 " + currentSearchHighlights.size() + " 处", Toast.LENGTH_SHORT).show();
+    }
+
+    private void clearPdfSearch() { clearPdfSearch(true); }
+
+    private void clearPdfSearch(boolean showToast) {
+        currentSearchHighlights.clear();
+        if (overlaySearchHighlighter != null) overlaySearchHighlighter.clear();
+        if (pdfOverlay != null) pdfOverlay.clearSearchHighlights();
+        if (showToast) Toast.makeText(this, "已清除搜索高亮", Toast.LENGTH_SHORT).show();
+    }
+
+    private void handlePdfLongPress(MotionEvent event) {
+        if (event == null || isEditMode || pdfOverlay == null || pdfView == null || pdfUri == null) {
+            return;
+        }
+
+        PdfOverlayView.PageHit hit = pdfOverlay.locateViewPoint(event.getX(), event.getY());
+        if (hit == null) return;
+
+        if (textSelectionRepository == null) resetTextSelectionRepository();
+        if (textSelectionRepository == null) return;
+
+        final int requestId = ++textSelectionRequestId;
+        Toast.makeText(this, "正在读取当前页文本层…", Toast.LENGTH_SHORT).show();
+        textSelectionRepository.requestPage(hit.pageIndex, new PdfTextSelectionRepository.Callback() {
+            @Override
+            public void onLoaded(PdfTextPage page) {
+                runOnUiThread(() -> {
+                    if (requestId != textSelectionRequestId || isFinishing() || isDestroyed()) return;
+                    if (page == null || page.isEmpty()) {
+                        Toast.makeText(PdfViewerActivity.this,
+                                "当前页面没有可选择的文本层",
+                                Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    boolean selected = pdfOverlay.beginTextSelection(page, hit.pageX, hit.pageY);
+                    if (!selected) {
+                        Toast.makeText(PdfViewerActivity.this,
+                                "请长按文字本身以开始选择",
+                                Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    showTextSelectionActionMode();
+                });
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                runOnUiThread(() -> {
+                    if (requestId != textSelectionRequestId || isFinishing() || isDestroyed()) return;
+                    Toast.makeText(PdfViewerActivity.this,
+                            "文本层读取失败：" + safeMessage(error),
+                            Toast.LENGTH_LONG).show();
+                });
+            }
+        });
+    }
+
+    private void resetTextSelectionRepository() {
+        textSelectionRequestId++;
+        clearTextSelectionUi();
+        if (textSelectionRepository != null) {
+            textSelectionRepository.close();
+            textSelectionRepository = null;
+        }
+        if (pdfUri != null) {
+            textSelectionRepository = new PdfTextSelectionRepository(this, pdfUri, pdfPath);
+        }
+    }
+
+    private void showTextSelectionActionMode() {
+        if (pdfOverlay == null) return;
+        if (textSelectionActionMode == null) {
+            textSelectionActionMode = pdfOverlay.startActionMode(new ActionMode.Callback2() {
+                @Override
+                public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                    menu.add(Menu.NONE, TEXT_ACTION_COPY, 0, "复制")
+                            .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS);
+                    menu.add(Menu.NONE, TEXT_ACTION_SELECT_ALL, 1, "全选")
+                            .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+                    menu.add(Menu.NONE, TEXT_ACTION_CANCEL, 2, "取消")
+                            .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+                    return true;
+                }
+
+                @Override
+                public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                    return false;
+                }
+
+                @Override
+                public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                    switch (item.getItemId()) {
+                        case TEXT_ACTION_COPY:
+                            copySelectedPdfText();
+                            mode.finish();
+                            return true;
+                        case TEXT_ACTION_SELECT_ALL:
+                            if (pdfOverlay != null) {
+                                pdfOverlay.selectAllTextOnPage();
+                                mode.invalidateContentRect();
+                            }
+                            return true;
+                        case TEXT_ACTION_CANCEL:
+                            mode.finish();
+                            return true;
+                        default:
+                            return false;
+                    }
+                }
+
+                @Override
+                public void onDestroyActionMode(ActionMode mode) {
+                    textSelectionActionMode = null;
+                    if (pdfOverlay != null && pdfOverlay.hasTextSelection()) {
+                        pdfOverlay.clearTextSelection();
+                    }
+                }
+
+                @Override
+                public void onGetContentRect(ActionMode mode, View view, Rect outRect) {
+                    if (pdfOverlay == null || !pdfOverlay.getTextSelectionBoundsInView(outRect)) {
+                        super.onGetContentRect(mode, view, outRect);
+                    }
+                }
+            }, ActionMode.TYPE_FLOATING);
+        }
+        if (textSelectionActionMode != null) {
+            textSelectionActionMode.invalidateContentRect();
+        }
+    }
+
+    private void copySelectedPdfText() {
+        if (pdfOverlay == null) return;
+        String selected = pdfOverlay.getSelectedText();
+        if (selected == null || selected.isEmpty()) return;
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard != null) {
+            clipboard.setPrimaryClip(ClipData.newPlainText("PDF 文本", selected));
+            Toast.makeText(this, "已复制所选文本", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void clearTextSelectionUi() {
+        textSelectionRequestId++;
+        if (textSelectionActionMode != null) {
+            textSelectionActionMode.finish();
+        } else if (pdfOverlay != null && pdfOverlay.hasTextSelection()) {
+            pdfOverlay.clearTextSelection();
         }
     }
 
@@ -356,16 +622,29 @@ public class PdfViewerActivity extends AppCompatActivity {
 
     private void setupTextInputCallback() {
         if (pdfOverlay != null) {
-            pdfOverlay.setOnTextRequestListener((docX, docY) -> {
+            pdfOverlay.setOnTextRequestListener((pageIndex, pageX, pageY) -> {
                 final android.widget.EditText input = new android.widget.EditText(this);
+                input.setSingleLine(false);
+                input.setMinLines(2);
+                input.setHint("输入要附加到 PDF 的文本批注");
                 new AlertDialog.Builder(this)
-                        .setTitle("输入文本")
+                        .setTitle("添加文本批注")
                         .setView(input)
                         .setPositiveButton("确定", (dialog, which) -> {
                             String text = input.getText().toString();
-                            if (!text.isEmpty()) {
+                            if (!text.trim().isEmpty()) {
                                 int size = seekTextSize.getProgress() + 10;
-                                pdfOverlay.addTextAction(text, docX, docY, currentDrawColor, size, isTextBold, isTextItalic, isTextUnderline);
+                                pdfOverlay.addTextAction(
+                                        text,
+                                        pageIndex,
+                                        pageX,
+                                        pageY,
+                                        currentDrawColor,
+                                        size,
+                                        isTextBold,
+                                        isTextItalic,
+                                        isTextUnderline
+                                );
                             }
                         })
                         .setNegativeButton("取消", null)
@@ -392,6 +671,7 @@ public class PdfViewerActivity extends AppCompatActivity {
             }
 
             tvTopTitle.setText(currentFileName);
+            resetTextSelectionRepository();
 
             // 🌟 读取无侵入式的历史阅读进度
             int lastReadPage = progressPrefs.getInt(pdfUri.toString(), 0);
@@ -414,11 +694,16 @@ public class PdfViewerActivity extends AppCompatActivity {
                 .pageSnap(false)
                 .pageFling(false)
                 .onTap(e -> {
+                    if (pdfOverlay != null && pdfOverlay.hasTextSelection()) {
+                        clearTextSelectionUi();
+                        return true;
+                    }
                     if (!isEditMode || currentEditState == EditState.DRAG) {
                         toggleMenuVisibility();
                     }
                     return true;
                 })
+                .onLongPress(this::handlePdfLongPress)
                 .onPageChange((page, pageCount) -> {
                     if (!isEditMode) {
                         tvTopTitle.setText(currentFileName + " (" + (page + 1) + "/" + pageCount + ")");
@@ -435,6 +720,9 @@ public class PdfViewerActivity extends AppCompatActivity {
                 // 🌟 新增：物理触底探测器，完美解决“短页面导致无法判定为最后一页”的终极 Bug
                 // =========================================================================
                 .onPageScroll((page, positionOffset) -> {
+                    if (textSelectionActionMode != null) {
+                        textSelectionActionMode.invalidateContentRect();
+                    }
                     // canScrollVertically(1) 用于检测 View 是否还能向下滚动
                     // 返回 false 说明已经被死死卡在最底部了，一像素都滚不动了
                     boolean isPhysicallyAtBottom = !pdfView.canScrollVertically(1);
@@ -465,6 +753,9 @@ public class PdfViewerActivity extends AppCompatActivity {
                 })
                 // =========================================================================
                 .onLoad(nbPages -> {
+                    if (pdfOverlay != null) {
+                        pdfOverlay.refreshPageGeometry();
+                    }
                     if (!isEditMode) {
                         tvTopTitle.setText(currentFileName + " (" + (targetPageIndex + 1) + "/" + nbPages + ")");
                     }
@@ -551,6 +842,7 @@ public class PdfViewerActivity extends AppCompatActivity {
         pdfPath = preloadedNextPath;
         pdfName = preloadedNextName;
         pdfUri = preloadedNextUri;
+        resetTextSelectionRepository();
 
         currentFileName = pdfName;
         if (currentFileName.toLowerCase().endsWith(".pdf")) {
@@ -570,7 +862,6 @@ public class PdfViewerActivity extends AppCompatActivity {
             pdfOverlay.clearActions();
         }
 
-        updateFavoriteIconState();
 
         // 🌟 连卷时，不要读历史进度，强制从 0 (第1页) 开始看新的一卷！
         reloadPdfView(0);
@@ -582,15 +873,21 @@ public class PdfViewerActivity extends AppCompatActivity {
         updateNextVolumeButtonState();
 
         if (isEditMode) {
-            tvTopTitle.setText("编辑模式");
+            clearTextSelectionUi();
+            isMenuVisible = true;
+            topMenuLayout.animate().cancel();
+            topMenuLayout.setTranslationY(0f);
+            topMenuLayout.setVisibility(View.VISIBLE);
+
+            tvTopTitle.setText("批注模式");
             ivBackOrExit.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
-            ivFavorite.setVisibility(View.GONE);
-            ivEditMode.setVisibility(View.GONE);
             ivUndo.setVisibility(View.VISIBLE);
             ivSave.setVisibility(View.VISIBLE);
 
+            annotationPanelContainer.setVisibility(View.VISIBLE);
             dividerLine.setVisibility(View.VISIBLE);
             llEditToolsRow.setVisibility(View.VISIBLE);
+            tvAnnotationPageWarning.setVisibility(View.VISIBLE);
 
             switchEditState(EditState.DRAG);
         } else {
@@ -601,13 +898,10 @@ public class PdfViewerActivity extends AppCompatActivity {
 
             ivUndo.setVisibility(View.GONE);
             ivSave.setVisibility(View.GONE);
-            ivFavorite.setVisibility(View.VISIBLE);
-            ivEditMode.setVisibility(View.VISIBLE);
 
-            dividerLine.setVisibility(View.GONE);
-            llEditToolsRow.setVisibility(View.GONE);
             llDoodleProperties.setVisibility(View.GONE);
             llTextProperties.setVisibility(View.GONE);
+            annotationPanelContainer.setVisibility(View.GONE);
 
             if (pdfOverlay != null) {
                 pdfOverlay.clearActions();
@@ -619,6 +913,7 @@ public class PdfViewerActivity extends AppCompatActivity {
             if (pdfView != null) {
                 pdfView.setSwipeEnabled(true);
             }
+            schedulePdfViewportRelayout();
         }
     }
 
@@ -664,17 +959,59 @@ public class PdfViewerActivity extends AppCompatActivity {
                 }
                 break;
         }
+
+        schedulePdfViewportRelayout();
+    }
+
+    /**
+     * 批注一级/二级菜单展开或收起后，重新计算 PDF 内容框。
+     *
+     * <p>菜单是 PDF 内容框的同级 View，不通过 translation、PopupWindow 或覆盖层显示。
+     * 这里在新高度生效后恢复原来的文档滚动比例，并要求 PDFView 重新装载可见页面，
+     * 避免第一页顶部或当前页上沿停留在旧视口之外。</p>
+     */
+    private void schedulePdfViewportRelayout() {
+        if (pdfContentFrame == null || pdfView == null || pdfOverlay == null) {
+            return;
+        }
+
+        final float positionOffset;
+        try {
+            positionOffset = pdfView.getPageCount() > 0 ? pdfView.getPositionOffset() : 0f;
+        } catch (Exception ignored) {
+            return;
+        }
+
+        pdfContentFrame.requestLayout();
+        pdfView.requestLayout();
+        pdfOverlay.requestLayout();
+
+        // 等父布局真正完成高度调整，再恢复位置和刷新渲染/批注坐标。
+        pdfContentFrame.post(() -> pdfContentFrame.post(() -> {
+            if (isFinishing() || pdfView.getPageCount() <= 0) {
+                return;
+            }
+            try {
+                pdfView.setPositionOffset(positionOffset, false);
+                pdfView.loadPages();
+            } catch (Exception ignored) {
+                // PDF 尚在异步加载时只刷新布局；onLoad 后会重新建立页面数据。
+            }
+            pdfOverlay.refreshPageGeometry();
+            pdfOverlay.invalidate();
+            pdfView.invalidate();
+        }));
     }
 
     private void handleBackAction() {
         if (isEditMode) {
             new AlertDialog.Builder(this)
-                    .setTitle("退出编辑")
-                    .setMessage("确定要放弃未保存的修改并退出吗？")
+                    .setTitle("退出批注模式")
+                    .setMessage("确定要放弃未保存的批注并退出吗？")
                     .setPositiveButton("确定退出", (dialog, which) -> {
                         toggleEditMode(false);
                     })
-                    .setNegativeButton("继续编辑", null)
+                    .setNegativeButton("继续批注", null)
                     .show();
         } else {
             finish();
@@ -683,12 +1020,12 @@ public class PdfViewerActivity extends AppCompatActivity {
 
     private void handleSaveAction() {
         new AlertDialog.Builder(this)
-                .setTitle("保存修改")
+                .setTitle("保存批注")
                 .setItems(new String[]{"覆盖原文件 (直接保存)", "另存为新文件 (副本)"}, (dialog, which) -> {
                     if (which == 0) {
                         executeOverwriteSave();
                     } else {
-                        executeiTextFastMerge();
+                        executeSaveCopy();
                     }
                 })
                 .show();
@@ -702,86 +1039,28 @@ public class PdfViewerActivity extends AppCompatActivity {
         }
 
         AlertDialog progressDialog = new AlertDialog.Builder(this)
-                .setTitle("正在覆盖保存")
-                .setMessage("请稍候，正在将批注烙印至原文件中...")
+                .setTitle("正在写入批注")
+                .setMessage("请稍候，正在使用 PdfBox-Android 写入矢量图形和文本...")
                 .setCancelable(false)
                 .create();
         progressDialog.show();
 
-        final float pageWidth = pdfView.getPageSize(0).getWidth();
-        final float pageHeight = pdfView.getPageSize(0).getHeight();
-        final float spacing = pdfView.getSpacingPx();
+        final List<PdfOverlayView.AnnotationAction> actions = pdfOverlay.getActionsSnapshot();
+        final List<PdfOverlayView.PageMetrics> pageMetrics = pdfOverlay.getPageMetricsSnapshot();
         final int currentPage = pdfView.getCurrentPage();
 
         new Thread(() -> {
-            try {
-                InputStream fis = null;
-                try {
-                    if ("content".equals(pdfUri.getScheme())) {
-                        fis = getContentResolver().openInputStream(pdfUri);
-                    } else {
-                        fis = new FileInputStream(new File(pdfUri.getPath()));
-                    }
-                } catch (Exception e) {
-                    fis = new FileInputStream(new File(pdfPath));
+            File tempFile = new File(getCacheDir(), "temp_overwrite_" + System.currentTimeMillis() + ".pdf");
+            try (InputStream source = openPdfInputStream();
+                 FileOutputStream tempOut = new FileOutputStream(tempFile)) {
+                PdfBoxAnnotationWriter.write(source, tempOut, actions, pageMetrics);
+
+                try (InputStream tempIn = new FileInputStream(tempFile);
+                     OutputStream originalOut = openPdfOutputStream()) {
+                    if (originalOut == null) throw new Exception("没有原文件的写入权限，请使用另存为副本");
+                    copyStream(tempIn, originalOut);
+                    originalOut.flush();
                 }
-                if (fis == null) throw new Exception("源文件读取失败");
-
-                PdfReader reader = new PdfReader(fis);
-
-                File tempFile = new File(getCacheDir(), "temp_overwrite_" + System.currentTimeMillis() + ".pdf");
-                FileOutputStream tempFos = new FileOutputStream(tempFile);
-
-                PdfStamper stamper = new PdfStamper(reader, tempFos);
-                int pageCount = reader.getNumberOfPages();
-
-                for (int i = 1; i <= pageCount; i++) {
-                    Bitmap pageCropBitmap = pdfOverlay.getPageAnnotationBitmap(i - 1, pageWidth, pageHeight, spacing);
-                    if (pageCropBitmap != null) {
-                        PdfContentByte overContent = stamper.getOverContent(i);
-                        ByteArrayOutputStream stream = new ByteArrayOutputStream();
-                        pageCropBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream);
-                        Image iTextImage = Image.getInstance(stream.toByteArray());
-
-                        iTextImage.setAbsolutePosition(0, 0);
-                        iTextImage.scaleAbsolute(reader.getPageSize(i).getWidth(), reader.getPageSize(i).getHeight());
-
-                        overContent.addImage(iTextImage);
-                        pageCropBitmap.recycle();
-                    }
-                }
-
-                stamper.close();
-                reader.close();
-                fis.close();
-
-                OutputStream originalOs = null;
-                try {
-                    if ("content".equals(pdfUri.getScheme())) {
-                        originalOs = getContentResolver().openOutputStream(pdfUri, "rwt");
-                        if (originalOs == null) originalOs = getContentResolver().openOutputStream(pdfUri);
-                    } else {
-                        originalOs = new FileOutputStream(new File(pdfPath));
-                    }
-                } catch (Exception e) {
-                    if (pdfPath != null && !pdfPath.isEmpty()) {
-                        originalOs = new FileOutputStream(new File(pdfPath));
-                    }
-                }
-
-                if (originalOs == null) throw new Exception("没有原文件的写入/覆盖权限，请使用另存为功能");
-
-                FileInputStream tempFis = new FileInputStream(tempFile);
-                byte[] buffer = new byte[8192];
-                int len;
-                while ((len = tempFis.read(buffer)) > 0) {
-                    originalOs.write(buffer, 0, len);
-                }
-                originalOs.flush();
-                originalOs.close();
-                tempFis.close();
-
-                tempFile.delete();
 
                 if (pdfPath != null && !pdfPath.isEmpty()) {
                     MediaScannerConnection.scanFile(this, new String[]{pdfPath}, new String[]{"application/pdf"}, null);
@@ -789,26 +1068,26 @@ public class PdfViewerActivity extends AppCompatActivity {
 
                 runOnUiThread(() -> {
                     progressDialog.dismiss();
-                    if (dbHelper != null) {
-                        dbHelper.updateLastModifiedTime(pdfUri.toString());
-                    }
-                    Toast.makeText(this, "保存成功！已覆盖原文件", Toast.LENGTH_LONG).show();
-
+                    if (dbHelper != null) dbHelper.updateLastModifiedTime(pdfUri.toString());
+                    Toast.makeText(this, "批注保存成功，已覆盖原文件", Toast.LENGTH_LONG).show();
                     toggleEditMode(false);
+                    resetTextSelectionRepository();
                     reloadPdfView(currentPage);
                 });
-
             } catch (Exception e) {
                 e.printStackTrace();
                 runOnUiThread(() -> {
                     progressDialog.dismiss();
-                    Toast.makeText(this, "覆盖失败：" + e.getMessage() + "\n(建议使用另存为副本)", Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, "覆盖失败：" + safeMessage(e) +
+                        "\n建议改用另存为副本", Toast.LENGTH_LONG).show();
                 });
+            } finally {
+                if (tempFile.exists()) tempFile.delete();
             }
         }).start();
     }
 
-    private void executeiTextFastMerge() {
+    private void executeSaveCopy() {
         if (pdfUri == null) return;
         if (pdfOverlay == null || pdfOverlay.isActionStackEmpty()) {
             Toast.makeText(this, "当前没有任何批注内容，无需另存", Toast.LENGTH_SHORT).show();
@@ -816,83 +1095,83 @@ public class PdfViewerActivity extends AppCompatActivity {
         }
 
         AlertDialog progressDialog = new AlertDialog.Builder(this)
-                .setTitle("正在极速切页保存")
-                .setMessage("请稍候，文件正在逐页拼装写入...")
+                .setTitle("正在另存批注副本")
+                .setMessage("请稍候，正在使用 PdfBox-Android 写入批注...")
                 .setCancelable(false)
                 .create();
         progressDialog.show();
 
-        final float pageWidth = pdfView.getPageSize(0).getWidth();
-        final float pageHeight = pdfView.getPageSize(0).getHeight();
-        final float spacing = pdfView.getSpacingPx();
+        final List<PdfOverlayView.AnnotationAction> actions = pdfOverlay.getActionsSnapshot();
+        final List<PdfOverlayView.PageMetrics> pageMetrics = pdfOverlay.getPageMetricsSnapshot();
 
         new Thread(() -> {
-            try {
-                InputStream fis = null;
-                try {
-                    if ("content".equals(pdfUri.getScheme())) {
-                        fis = getContentResolver().openInputStream(pdfUri);
-                    } else {
-                        fis = new FileInputStream(new File(pdfUri.getPath()));
-                    }
-                } catch (Exception e) {
-                    fis = new FileInputStream(new File(pdfPath));
-                }
-                if (fis == null) throw new Exception("源文件读取失败");
+            String timeStamp = new SimpleDateFormat("HHmmss", Locale.getDefault()).format(new Date());
+            String baseName = currentFileName == null ? "未命名" : currentFileName.replaceFirst("(?i)\\.pdf$", "");
+            String targetCopyName = baseName + "-批注副本-" + timeStamp + ".pdf";
+            File destFile = new File(getExternalFilesDir(null), targetCopyName);
 
-                PdfReader reader = new PdfReader(fis);
-
-                String timeStamp = new SimpleDateFormat("HHmmss", Locale.getDefault()).format(new Date());
-                String targetCopyName = currentFileName + "-副本-" + timeStamp + ".pdf";
-
-                File destFile = new File(getExternalFilesDir(null), targetCopyName);
-                FileOutputStream fos = new FileOutputStream(destFile);
-
-                PdfStamper stamper = new PdfStamper(reader, fos);
-                int pageCount = reader.getNumberOfPages();
-
-                for (int i = 1; i <= pageCount; i++) {
-                    Bitmap pageCropBitmap = pdfOverlay.getPageAnnotationBitmap(i - 1, pageWidth, pageHeight, spacing);
-
-                    if (pageCropBitmap != null) {
-                        PdfContentByte overContent = stamper.getOverContent(i);
-                        ByteArrayOutputStream stream = new ByteArrayOutputStream();
-                        pageCropBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream);
-                        Image iTextImage = Image.getInstance(stream.toByteArray());
-
-                        iTextImage.setAbsolutePosition(0, 0);
-                        iTextImage.scaleAbsolute(reader.getPageSize(i).getWidth(), reader.getPageSize(i).getHeight());
-
-                        overContent.addImage(iTextImage);
-                        pageCropBitmap.recycle();
-                    }
-                }
-
-                stamper.close();
-                reader.close();
-                fis.close();
+            try (InputStream source = openPdfInputStream();
+                 FileOutputStream target = new FileOutputStream(destFile)) {
+                PdfBoxAnnotationWriter.write(source, target, actions, pageMetrics);
 
                 runOnUiThread(() -> {
                     progressDialog.dismiss();
                     if (dbHelper != null) {
                         try {
-                            PdfItem copyItem = new PdfItem(Uri.fromFile(destFile), targetCopyName, destFile.getAbsolutePath(), rawModifiedTime, false);
+                            PdfItem copyItem = new PdfItem(Uri.fromFile(destFile), targetCopyName,
+                                    destFile.getAbsolutePath(), rawModifiedTime, false);
                             dbHelper.insertOrUpdateHomeItem(copyItem);
                         } catch (Exception ignore) {}
                     }
-                    Toast.makeText(this, "烙印成功！副本已保存并推至大厅", Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, "批注副本保存成功，已加入首页", Toast.LENGTH_LONG).show();
                     if (pdfOverlay != null) pdfOverlay.clearActions();
                     toggleEditMode(false);
                 });
-
             } catch (Exception e) {
                 e.printStackTrace();
+                if (destFile.exists()) destFile.delete();
                 runOnUiThread(() -> {
                     progressDialog.dismiss();
-                    Toast.makeText(this, "保存失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, "保存失败：" + safeMessage(e), Toast.LENGTH_LONG).show();
                 });
             }
         }).start();
+    }
+
+    private InputStream openPdfInputStream() throws Exception {
+        InputStream input = null;
+        if (pdfUri != null && "content".equals(pdfUri.getScheme())) {
+            input = getContentResolver().openInputStream(pdfUri);
+        } else if (pdfUri != null && pdfUri.getPath() != null) {
+            File f = new File(pdfUri.getPath());
+            if (f.isFile()) input = new FileInputStream(f);
+        }
+        if (input == null && pdfPath != null && !pdfPath.isEmpty()) {
+            input = new FileInputStream(new File(pdfPath));
+        }
+        if (input == null) throw new Exception("源 PDF 读取失败");
+        return input;
+    }
+
+    private OutputStream openPdfOutputStream() throws Exception {
+        if (pdfUri != null && "content".equals(pdfUri.getScheme())) {
+            OutputStream out = getContentResolver().openOutputStream(pdfUri, "rwt");
+            return out != null ? out : getContentResolver().openOutputStream(pdfUri);
+        }
+        if (pdfPath != null && !pdfPath.isEmpty()) return new FileOutputStream(new File(pdfPath));
+        if (pdfUri != null && pdfUri.getPath() != null) return new FileOutputStream(new File(pdfUri.getPath()));
+        return null;
+    }
+
+    private static void copyStream(InputStream in, OutputStream out) throws Exception {
+        byte[] buffer = new byte[64 * 1024];
+        int read;
+        while ((read = in.read(buffer)) >= 0) out.write(buffer, 0, read);
+    }
+
+    private static String safeMessage(Throwable error) {
+        String message = error == null ? null : error.getMessage();
+        return message == null || message.trim().isEmpty() ? "未知错误" : message;
     }
 
     private void toggleMenuVisibility() {
@@ -917,16 +1196,50 @@ public class PdfViewerActivity extends AppCompatActivity {
         }
     }
 
-    private void updateFavoriteIconState() {
-        if (dbHelper == null || pdfPath == null) return;
-        boolean isFav = dbHelper.isFavorite(pdfPath, pdfName);
-        ivFavorite.setImageResource(isFav ? R.drawable.ic_star_fill : R.drawable.ic_star_circle);
+    private void showMainMenu(View anchor) {
+        android.widget.PopupMenu popup = new android.widget.PopupMenu(this, anchor);
+        if (isEditMode) {
+            popup.getMenu().add(0, 10, 0, "保存批注");
+            popup.getMenu().add(0, 11, 1, "退出批注模式");
+        } else {
+            popup.getMenu().add(0, 1, 0, "批注模式");
+            popup.getMenu().add(0, 2, 1, "搜索模式");
+            boolean favorite = dbHelper != null && pdfPath != null && dbHelper.isFavorite(pdfPath, pdfName);
+            popup.getMenu().add(0, 3, 2, favorite ? "取消收藏" : "收藏");
+        }
+        popup.setOnMenuItemClickListener(item -> {
+            switch (item.getItemId()) {
+                case 1: toggleEditMode(true); return true;
+                case 2: showPdfSearchDialog(); return true;
+                case 3: handleFavoriteToggle(); return true;
+                case 10: handleSaveAction(); return true;
+                case 11: handleBackAction(); return true;
+                default: return false;
+            }
+        });
+        popup.show();
     }
 
     private void handleFavoriteToggle() {
         if (dbHelper == null) return;
         boolean isNowFav = dbHelper.toggleFavorite(pdfPath, pdfName, pdfUri.toString(), rawModifiedTime);
-        ivFavorite.setImageResource(isNowFav ? R.drawable.ic_star_fill : R.drawable.ic_star_circle);
         Toast.makeText(this, isNowFav ? "已加入收藏夹" : "已取消收藏", Toast.LENGTH_SHORT).show();
     }
+    @Override
+    protected void onDestroy() {
+        if (textSelectionActionMode != null) {
+            textSelectionActionMode.finish();
+            textSelectionActionMode = null;
+        }
+        if (textSelectionRepository != null) {
+            textSelectionRepository.close();
+            textSelectionRepository = null;
+        }
+        if (pdfSearchManager != null) {
+            pdfSearchManager.cancel();
+            pdfSearchManager.clearCache();
+        }
+        super.onDestroy();
+    }
+
 }
