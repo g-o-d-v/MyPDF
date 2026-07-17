@@ -84,6 +84,8 @@ public class MainUIManager {
                 if (activity instanceof MainActivity) {
                     ((MainActivity) activity).loadFavoriteData();
                 }
+            } else if (id == R.id.nav_settings) {
+                activity.startActivity(new Intent(activity, SettingsActivity.class));
             }
             return true;
         });

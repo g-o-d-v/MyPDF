@@ -34,5 +34,9 @@
             android:name=".PdfViewerActivity"
             android:theme="@style/Theme.MyPDF" />
 
+        <activity
+            android:name=".SettingsActivity"
+            android:theme="@style/Theme.MyPDF" />
+
     </application>
 </manifest>

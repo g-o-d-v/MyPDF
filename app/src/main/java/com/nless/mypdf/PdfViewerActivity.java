@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.graphics.drawable.GradientDrawable;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
@@ -14,7 +15,10 @@ import android.view.ActionMode;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.MotionEvent;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.view.View;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
@@ -28,12 +32,14 @@ import androidx.documentfile.provider.DocumentFile;
 
 import com.github.barteksc.pdfviewer.PDFView;
 import com.nless.pdf_search_engine.androidpdfviewer.AndroidPdfViewerAdapter;
-import com.nless.pdf_search_engine.androidpdfviewer.PdfOverlaySearchHighlighter;
 import com.nless.pdf_search_engine.core.PdfSearchCallback;
 import com.nless.pdf_search_engine.core.PdfSearchManager;
 import com.nless.pdf_search_engine.core.PdfSearchMode;
 import com.nless.pdf_search_engine.core.PdfSearchOptions;
+import com.nless.pdf_search_engine.core.PdfSearchPageOrder;
+import com.nless.pdf_search_engine.core.PdfSearchProgressInfo;
 import com.nless.pdf_search_engine.core.PdfSearchResult;
+import com.nless.pdf_search_engine.core.PdfTextLayerOcrFallbackPolicy;
 import com.nless.pdf_search_engine.core.PdfSearchSource;
 //import com.github.barteksc.pdfviewer.scroll.DefaultScrollHandle; // 🌟 引入原生滑动条组件
 
@@ -45,6 +51,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -57,6 +65,7 @@ public class PdfViewerActivity extends AppCompatActivity {
 
     private EditState currentEditState = EditState.DRAG;
     private boolean isEditMode = false;
+    private boolean isSearchMode = false;
     private boolean isMenuVisible = true;
 
     private boolean isAtLastPage = false;
@@ -78,6 +87,7 @@ public class PdfViewerActivity extends AppCompatActivity {
     private PdfOverlayView pdfOverlay;
     private LinearLayout topMenuLayout;
     private LinearLayout annotationPanelContainer;
+    private LinearLayout searchPanelContainer;
     private View pdfContentFrame;
 
     private TextView btnNextVolume;
@@ -97,6 +107,13 @@ public class PdfViewerActivity extends AppCompatActivity {
     private TextView tvStyleBold, tvStyleItalic, tvStyleUnderline;
     private SeekBar seekTextSize;
 
+    private TextView tvSearchModeSelector;
+    private EditText etSearchKeyword;
+    private TextView btnSearchExecute;
+    private TextView tvSearchStatus;
+    private LinearLayout llSearchNavigationRow;
+    private TextView btnSearchPrevious, tvSearchPosition, btnSearchNext;
+
     private boolean isTextBold = false;
     private boolean isTextItalic = false;
     private boolean isTextUnderline = false;
@@ -111,9 +128,15 @@ public class PdfViewerActivity extends AppCompatActivity {
     private SharedPreferences progressPrefs;
 
     private final List<PdfOverlayView.SearchHighlight> currentSearchHighlights = new ArrayList<>();
+    private final List<SearchMatch> currentSearchMatches = new ArrayList<>();
     private PdfSearchManager pdfSearchManager;
     private AndroidPdfViewerAdapter androidPdfViewerAdapter;
-    private PdfOverlaySearchHighlighter overlaySearchHighlighter;
+    private PdfSearchMode selectedSearchMode = PdfSearchMode.TEXT_THEN_OCR;
+    private String selectedSearchModeLabel = "智能模式";
+    private int currentSearchMatchIndex = -1;
+    private boolean searchInProgress = false;
+    private int searchRequestId = 0;
+    private long appliedSearchCacheGeneration = 0L;
 
     private PdfTextSelectionRepository textSelectionRepository;
     private ActionMode textSelectionActionMode;
@@ -144,6 +167,7 @@ public class PdfViewerActivity extends AppCompatActivity {
 
         dbHelper = new PdfDbHelper(this);
         pdfSearchManager = new PdfSearchManager(this);
+        appliedSearchCacheGeneration = SearchPreferences.getCacheClearGeneration(this);
         // 🌟 初始化轻量级进度存储
         progressPrefs = getSharedPreferences("pdf_reading_progress", MODE_PRIVATE);
 
@@ -153,11 +177,27 @@ public class PdfViewerActivity extends AppCompatActivity {
         updateAllColorBlocksUI();
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        long generation = SearchPreferences.getCacheClearGeneration(this);
+        if (generation != appliedSearchCacheGeneration) {
+            appliedSearchCacheGeneration = generation;
+            if (pdfSearchManager != null) {
+                pdfSearchManager.clearCache();
+            }
+            if (pdfOverlay != null) {
+                clearPdfSearch(false);
+            }
+        }
+    }
+
     private void initViews() {
         pdfView = findViewById(R.id.pdfView);
         pdfOverlay = findViewById(R.id.pdfOverlay);
         topMenuLayout = findViewById(R.id.top_menu_layout);
         annotationPanelContainer = findViewById(R.id.annotation_panel_container);
+        searchPanelContainer = findViewById(R.id.search_panel_container);
         pdfContentFrame = findViewById(R.id.pdf_content_frame);
 
         ivBackOrExit = findViewById(R.id.iv_back_or_exit);
@@ -188,8 +228,18 @@ public class PdfViewerActivity extends AppCompatActivity {
         tvStyleUnderline = findViewById(R.id.tv_style_underline);
         seekTextSize = findViewById(R.id.seek_text_size);
 
+        tvSearchModeSelector = findViewById(R.id.tv_search_mode_selector);
+        etSearchKeyword = findViewById(R.id.et_search_keyword);
+        btnSearchExecute = findViewById(R.id.btn_search_execute);
+        tvSearchStatus = findViewById(R.id.tv_search_status);
+        llSearchNavigationRow = findViewById(R.id.ll_search_navigation_row);
+        btnSearchPrevious = findViewById(R.id.btn_search_previous);
+        tvSearchPosition = findViewById(R.id.tv_search_position);
+        btnSearchNext = findViewById(R.id.btn_search_next);
+
         topMenuLayout.setVisibility(View.VISIBLE);
         annotationPanelContainer.setVisibility(View.GONE);
+        searchPanelContainer.setVisibility(View.GONE);
         llEditToolsRow.setVisibility(View.VISIBLE);
 
         if (pdfOverlay != null) {
@@ -289,6 +339,7 @@ public class PdfViewerActivity extends AppCompatActivity {
 
         setupColorBlocks();
         setupTextInputCallback();
+        setupSearchPanelListeners();
 
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
@@ -299,7 +350,7 @@ public class PdfViewerActivity extends AppCompatActivity {
     }
 
     private void updateNextVolumeButtonState() {
-        if (isAtLastPage && preloadedNextUri != null && !isEditMode) {
+        if (isAtLastPage && preloadedNextUri != null && !isEditMode && !isSearchMode) {
             if (btnNextVolume.getVisibility() != View.VISIBLE) {
                 btnNextVolume.setText("下一卷：\n" + preloadedNextName + "  〉");
                 btnNextVolume.setAlpha(0f);
@@ -315,101 +366,400 @@ public class PdfViewerActivity extends AppCompatActivity {
         }
     }
 
-    private void showPdfSearchDialog() {
-        final android.widget.EditText input = new android.widget.EditText(this);
-        input.setHint("输入搜索关键词");
-        input.setSingleLine(true);
-        new AlertDialog.Builder(this)
-                .setTitle("搜索 PDF 内容")
-                .setView(input)
-                .setPositiveButton("搜索", (dialog, which) -> {
-                    String keyword = input.getText().toString().trim();
-                    if (!keyword.isEmpty()) showSearchModeDialog(keyword);
-                })
-                .setNeutralButton("清除高亮", (dialog, which) -> clearPdfSearch())
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    private void showSearchModeDialog(String keyword) {
-        String[] modes = {
-                "智能当前页（文本优先，失败后 OCR）",
-                "文本层全文搜索",
-                "智能全文搜索（文本优先）",
-                "OCR 当前页"
-        };
-        new AlertDialog.Builder(this)
-                .setTitle("选择搜索模式")
-                .setItems(modes, (dialog, which) -> {
-                    if (which == 0) searchWithEngine(keyword, PdfSearchMode.TEXT_THEN_OCR, true);
-                    else if (which == 1) searchWithEngine(keyword, PdfSearchMode.TEXT_ONLY, false);
-                    else if (which == 2) searchWithEngine(keyword, PdfSearchMode.TEXT_THEN_OCR, false);
-                    else searchWithEngine(keyword, PdfSearchMode.OCR_ONLY, true);
-                }).show();
-    }
-
-    private void searchWithEngine(String keyword, PdfSearchMode mode, boolean currentPageOnly) {
-        if (pdfSearchManager == null || pdfUri == null || pdfView == null || pdfOverlay == null) return;
-        clearPdfSearch(false);
-        PdfSearchOptions options = new PdfSearchOptions();
-        options.mode = mode;
-        options.currentPageOnly = currentPageOnly;
-        options.currentPage = pdfView.getCurrentPage();
-        options.allowFullDocumentOcr = false;
-        options.ocrRenderWidth = 1280;
-        options.fallbackToOcrWhenTextNotFound = true;
-
-        pdfSearchManager.search(pdfUri, keyword, options, new PdfSearchCallback() {
-            @Override public void onSearchStarted(String value) {
-                runOnUiThread(() -> Toast.makeText(PdfViewerActivity.this, "正在搜索：" + value, Toast.LENGTH_SHORT).show());
+    private void setupSearchPanelListeners() {
+        tvSearchModeSelector.setOnClickListener(this::showSearchModePopup);
+        btnSearchExecute.setOnClickListener(v -> {
+            if (searchInProgress) {
+                cancelActiveSearch();
+            } else {
+                executeSearchFromPanel();
             }
-            @Override public void onSearchProgress(int currentPage, int totalPage, PdfSearchSource source) {
-                runOnUiThread(() -> tvTopTitle.setText((source == PdfSearchSource.OCR ? "OCR" : "文本") + "搜索中…"));
+        });
+        btnSearchPrevious.setOnClickListener(v -> navigateSearchResult(-1));
+        btnSearchNext.setOnClickListener(v -> navigateSearchResult(1));
+        etSearchKeyword.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                executeSearchFromPanel();
+                return true;
             }
-            @Override public void onSearchCompleted(List<PdfSearchResult> results) {
-                runOnUiThread(() -> showSearchResults(keyword, results));
-            }
-            @Override public void onSearchFailed(Throwable error) {
-                runOnUiThread(() -> Toast.makeText(PdfViewerActivity.this, "搜索失败：" + safeMessage(error), Toast.LENGTH_LONG).show());
-            }
-            @Override public void onSearchCancelled() { }
+            return false;
         });
     }
 
-    private void showSearchResults(String keyword, List<PdfSearchResult> results) {
-        int page = pdfView.getCurrentPage();
-        tvTopTitle.setText(currentFileName + " (" + (page + 1) + "/" + pdfView.getPageCount() + ")");
-        if (results == null || results.isEmpty()) {
-            Toast.makeText(this, "未找到：" + keyword, Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (androidPdfViewerAdapter == null) androidPdfViewerAdapter = new AndroidPdfViewerAdapter(pdfView);
-        if (overlaySearchHighlighter == null) overlaySearchHighlighter = new PdfOverlaySearchHighlighter();
-        List<AndroidPdfViewerAdapter.ViewerSearchHighlight> converted = androidPdfViewerAdapter.convertResults(results);
-        overlaySearchHighlighter.setHighlights(converted);
-        currentSearchHighlights.clear();
-        for (AndroidPdfViewerAdapter.ViewerSearchHighlight item : converted) {
-            if (item != null && item.rectInDoc != null) {
-                currentSearchHighlights.add(new PdfOverlayView.SearchHighlight(item.pageIndex, item.rectInDoc));
+    private void showSearchModePopup(View anchor) {
+        if (searchInProgress) return;
+        android.widget.PopupMenu popup = new android.widget.PopupMenu(this, anchor);
+        popup.getMenu().add(0, 1, 0, "智能模式");
+        popup.getMenu().add(0, 2, 1, "仅文本模式");
+        popup.getMenu().add(0, 3, 2, "仅扫描模式");
+        popup.setOnMenuItemClickListener(item -> {
+            switch (item.getItemId()) {
+                case 1:
+                    setSelectedSearchMode(PdfSearchMode.TEXT_THEN_OCR, "智能模式");
+                    return true;
+                case 2:
+                    setSelectedSearchMode(PdfSearchMode.TEXT_ONLY, "仅文本模式");
+                    return true;
+                case 3:
+                    setSelectedSearchMode(PdfSearchMode.OCR_ONLY, "仅扫描模式");
+                    return true;
+                default:
+                    return false;
             }
-        }
-        pdfOverlay.setSearchHighlights(currentSearchHighlights);
-        AndroidPdfViewerAdapter.ViewerSearchHighlight first = overlaySearchHighlighter.getCurrent();
-        if (first != null) pdfView.jumpTo(first.pageIndex, true);
-        Toast.makeText(this, "找到 " + currentSearchHighlights.size() + " 处", Toast.LENGTH_SHORT).show();
+        });
+        popup.show();
     }
 
-    private void clearPdfSearch() { clearPdfSearch(true); }
+    private void setSelectedSearchMode(PdfSearchMode mode, String label) {
+        selectedSearchMode = mode == null ? PdfSearchMode.TEXT_THEN_OCR : mode;
+        selectedSearchModeLabel = label == null ? "智能模式" : label;
+        tvSearchModeSelector.setText(selectedSearchModeLabel + " ▾");
+        clearPdfSearch(false);
+        showSearchStatus("已切换为" + selectedSearchModeLabel + "，输入关键词后开始搜索。", false);
+        schedulePdfViewportRelayout();
+    }
 
-    private void clearPdfSearch(boolean showToast) {
+    private void toggleSearchMode(boolean enterSearchMode) {
+        if (enterSearchMode == isSearchMode) return;
+        if (enterSearchMode && isEditMode) return;
+
+        isSearchMode = enterSearchMode;
+        updateNextVolumeButtonState();
+
+        if (isSearchMode) {
+            clearTextSelectionUi();
+            isMenuVisible = true;
+            topMenuLayout.animate().cancel();
+            topMenuLayout.setTranslationY(0f);
+            topMenuLayout.setVisibility(View.VISIBLE);
+
+            tvTopTitle.setText("搜索模式");
+            ivBackOrExit.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
+            ivUndo.setVisibility(View.GONE);
+            ivSave.setVisibility(View.GONE);
+            annotationPanelContainer.setVisibility(View.GONE);
+            searchPanelContainer.setVisibility(View.VISIBLE);
+
+            if (pdfOverlay != null) {
+                pdfOverlay.setMode(PdfOverlayView.Mode.DRAG);
+                pdfOverlay.setClickable(false);
+                pdfOverlay.setFocusable(false);
+            }
+            if (pdfView != null) pdfView.setSwipeEnabled(true);
+
+            if (currentSearchMatches.isEmpty()) {
+                tvSearchStatus.setVisibility(View.GONE);
+                llSearchNavigationRow.setVisibility(View.GONE);
+            }
+            etSearchKeyword.post(() -> {
+                if (!isFinishing() && isSearchMode) {
+                    etSearchKeyword.requestFocus();
+                }
+            });
+        } else {
+            searchRequestId++;
+            if (pdfSearchManager != null) pdfSearchManager.cancel();
+            setSearchInProgress(false);
+            clearPdfSearch(false);
+            searchPanelContainer.setVisibility(View.GONE);
+            hideKeyboard();
+
+            int currentPage = pdfView != null ? pdfView.getCurrentPage() : 0;
+            int pageCount = pdfView != null ? pdfView.getPageCount() : 0;
+            tvTopTitle.setText(currentFileName + " (" + (currentPage + 1) + "/" + pageCount + ")");
+            ivBackOrExit.setImageResource(android.R.drawable.ic_menu_revert);
+        }
+        schedulePdfViewportRelayout();
+    }
+
+    private void executeSearchFromPanel() {
+        if (!isSearchMode || pdfSearchManager == null || pdfUri == null || pdfView == null || pdfOverlay == null) {
+            return;
+        }
+        String keyword = etSearchKeyword.getText().toString().trim();
+        if (keyword.isEmpty()) {
+            showSearchStatus("请输入要搜索的关键词。", true);
+            llSearchNavigationRow.setVisibility(View.GONE);
+            etSearchKeyword.requestFocus();
+            return;
+        }
+        hideKeyboard();
+        searchWithEngine(keyword, selectedSearchMode);
+    }
+
+    private PdfSearchOptions createSearchOptions(PdfSearchMode mode) {
+        PdfSearchOptions options = new PdfSearchOptions();
+        options.mode = mode;
+        options.currentPageOnly = false;
+        options.currentPage = Math.max(0, pdfView.getCurrentPage());
+        options.startPage = 0;
+        options.endPage = -1;
+
+        // alpha03 的索引模式会把文本层与 OCR 页面内容缓存下来，后续更换关键词无需重复 OCR。
+        options.enableDocumentIndex = true;
+        options.usePersistentPageIndexCache = true;
+        options.usePersistentOcrCache = true;
+
+        options.ocrRenderWidth = SearchPreferences.getOcrRenderWidth(this);
+        options.allowFullDocumentOcr = mode != PdfSearchMode.TEXT_ONLY;
+        options.maxOcrPages = 0; // 0 表示不额外限制，由用户主动取消长任务。
+        options.ocrPageOrder = SearchPreferences.isCurrentPageFirstEnabled(this)
+                ? PdfSearchPageOrder.CURRENT_PAGE_OUTWARD
+                : PdfSearchPageOrder.NATURAL;
+        options.enableOcrPipeline = true;
+        options.ocrPrefetchPages = 1;
+        options.stopAfterFirstOcrMatch = false;
+
+        // 智能模式始终允许对“没有可用文本层”的页面进行 OCR。
+        // 开启“增强 OCR”后，文本层可用但未命中的页面也会继续 OCR。
+        boolean enhancedOcr = SearchPreferences.isSmartEnhancedOcrEnabled(this);
+        options.fallbackToOcrWhenTextNotFound = mode == PdfSearchMode.TEXT_THEN_OCR;
+        options.enablePageLevelTextOcrFallback = true;
+        options.textLayerOcrFallbackPolicy = enhancedOcr
+                ? PdfTextLayerOcrFallbackPolicy.UNUSABLE_OR_NO_MATCH
+                : PdfTextLayerOcrFallbackPolicy.UNUSABLE_TEXT_LAYER_ONLY;
+        options.enableCrossSourceDeduplication = true;
+        options.detectMultiColumnLayout = true;
+        options.maxResults = 0;
+
+        options.queryOptions.caseSensitive = SearchPreferences.isCaseSensitive(this);
+        // Unicode 兼容规范化和连续空格折叠保持为内部默认开启，不占用普通设置页。
+        options.queryOptions.normalizeUnicode = true;
+        options.queryOptions.collapseWhitespace = true;
+        options.queryOptions.allowCrossLineMatch = SearchPreferences.isCrossLineMatchEnabled(this);
+        options.queryOptions.ignoreWhitespaceForMatching =
+                SearchPreferences.isIgnoreAllWhitespaceEnabled(this);
+        options.queryOptions.tolerateOcrOZeroConfusion =
+                SearchPreferences.isOcrOZeroToleranceEnabled(this);
+        options.queryOptions.joinHyphenatedLineBreaks =
+                SearchPreferences.isJoinHyphenatedLineBreaksEnabled(this);
+        options.queryOptions.wholeWord = SearchPreferences.isWholeWordEnabled(this);
+        return options;
+    }
+
+    private void searchWithEngine(String keyword, PdfSearchMode mode) {
+        if (pdfSearchManager == null || pdfUri == null || pdfView == null || pdfOverlay == null) return;
+
+        pdfSearchManager.cancel();
+        clearPdfSearch(false);
+        final int requestId = ++searchRequestId;
+        final PdfSearchOptions options = createSearchOptions(mode);
+        setSearchInProgress(true);
+        showSearchStatus("正在使用" + selectedSearchModeLabel + "搜索…", false);
+
+        pdfSearchManager.search(pdfUri, keyword, options, new PdfSearchCallback() {
+            @Override
+            public void onSearchStarted(String value) {
+                if (!isActiveSearchRequest(requestId)) return;
+                showSearchStatus("正在使用" + selectedSearchModeLabel + "搜索“" + value + "”…", false);
+            }
+
+            @Override
+            public void onSearchProgress(int currentPage, int totalPage, PdfSearchSource source) {
+                if (!isActiveSearchRequest(requestId)) return;
+                String sourceText = source == PdfSearchSource.OCR ? "OCR" : "文本层";
+                String pageText = totalPage > 0
+                        ? "，第 " + (currentPage + 1) + " / " + totalPage + " 页"
+                        : "";
+                showSearchStatus("正在进行" + sourceText + "搜索" + pageText + "…", false);
+            }
+
+            @Override
+            public void onSearchProgress(PdfSearchProgressInfo progressInfo) {
+                if (!isActiveSearchRequest(requestId) || progressInfo == null) return;
+                String sourceText = progressInfo.source == PdfSearchSource.OCR ? "OCR" : "文本层";
+                String progressText = progressInfo.targetPages > 0
+                        ? progressInfo.processedPages + " / " + progressInfo.targetPages + " 页"
+                        : "第 " + (progressInfo.pageIndex + 1) + " 页";
+                showSearchStatus(
+                        "正在进行" + sourceText + "搜索：" + progressText
+                                + "，已发现 " + progressInfo.cumulativeMatchCount + " 个结果…",
+                        false
+                );
+            }
+
+            @Override
+            public void onSearchCompleted(List<PdfSearchResult> results) {
+                if (!isActiveSearchRequest(requestId)) return;
+                setSearchInProgress(false);
+                showSearchResults(keyword, results);
+            }
+
+            @Override
+            public void onSearchFailed(Throwable error) {
+                if (!isActiveSearchRequest(requestId)) return;
+                setSearchInProgress(false);
+                clearPdfSearch(false);
+                showSearchStatus("搜索失败：" + safeMessage(error), true);
+            }
+
+            @Override
+            public void onSearchCancelled() {
+                if (!isActiveSearchRequest(requestId)) return;
+                setSearchInProgress(false);
+                showSearchStatus("搜索已取消。", false);
+            }
+        });
+    }
+
+    private boolean isActiveSearchRequest(int requestId) {
+        return isSearchMode
+                && requestId == searchRequestId
+                && !isFinishing()
+                && !isDestroyed();
+    }
+
+    private void cancelActiveSearch() {
+        if (!searchInProgress) return;
+        searchRequestId++;
+        if (pdfSearchManager != null) pdfSearchManager.cancel();
+        setSearchInProgress(false);
+        showSearchStatus("搜索已取消。", false);
+    }
+
+    private void setSearchInProgress(boolean inProgress) {
+        searchInProgress = inProgress;
+        btnSearchExecute.setText(inProgress ? "取消" : "搜索");
+        tvSearchModeSelector.setEnabled(!inProgress);
+        tvSearchModeSelector.setAlpha(inProgress ? 0.55f : 1f);
+        etSearchKeyword.setEnabled(!inProgress);
+        etSearchKeyword.setAlpha(inProgress ? 0.75f : 1f);
+    }
+
+    private void showSearchResults(String keyword, List<PdfSearchResult> results) {
+        clearPdfSearch(false);
+        if (results == null || results.isEmpty()) {
+            showSearchStatus(selectedSearchModeLabel + "未查询到“" + keyword + "”。", false);
+            return;
+        }
+
+        if (androidPdfViewerAdapter == null) {
+            androidPdfViewerAdapter = new AndroidPdfViewerAdapter(pdfView);
+        }
+
+        List<SearchMatch> convertedMatches = new ArrayList<>();
+        for (PdfSearchResult result : results) {
+            if (result == null) continue;
+            List<AndroidPdfViewerAdapter.ViewerSearchHighlight> rects =
+                    androidPdfViewerAdapter.convertResults(Collections.singletonList(result));
+            if (rects == null || rects.isEmpty()) continue;
+            convertedMatches.add(new SearchMatch(result.pageIndex, rects));
+        }
+
+        convertedMatches.sort(Comparator
+                .comparingInt((SearchMatch item) -> item.pageIndex)
+                .thenComparingDouble(item -> item.firstTop)
+                .thenComparingDouble(item -> item.firstLeft));
+
+        currentSearchMatches.addAll(convertedMatches);
+        for (int matchIndex = 0; matchIndex < currentSearchMatches.size(); matchIndex++) {
+            SearchMatch match = currentSearchMatches.get(matchIndex);
+            for (AndroidPdfViewerAdapter.ViewerSearchHighlight item : match.rects) {
+                if (item == null || item.rectInPageRatio == null) continue;
+                currentSearchHighlights.add(new PdfOverlayView.SearchHighlight(
+                        item.pageIndex,
+                        item.rectInPageRatio,
+                        matchIndex
+                ));
+            }
+        }
+
+        if (currentSearchMatches.isEmpty() || currentSearchHighlights.isEmpty()) {
+            clearPdfSearch(false);
+            showSearchStatus("查询到了结果，但无法换算页面高亮坐标。", true);
+            return;
+        }
+
+        pdfOverlay.setSearchHighlights(currentSearchHighlights);
+        currentSearchMatchIndex = 0;
+        pdfOverlay.setCurrentSearchIndex(currentSearchMatchIndex);
+        showSearchStatus(
+                selectedSearchModeLabel + "查询到了 " + currentSearchMatches.size() + " 个结果。",
+                false
+        );
+        llSearchNavigationRow.setVisibility(View.VISIBLE);
+        updateSearchNavigationUi();
+        schedulePdfViewportRelayout(() -> focusSearchMatch(currentSearchMatchIndex));
+    }
+
+    private void navigateSearchResult(int direction) {
+        if (currentSearchMatches.isEmpty() || searchInProgress) return;
+        int size = currentSearchMatches.size();
+        currentSearchMatchIndex = (currentSearchMatchIndex + direction + size) % size;
+        pdfOverlay.setCurrentSearchIndex(currentSearchMatchIndex);
+        updateSearchNavigationUi();
+        focusSearchMatch(currentSearchMatchIndex);
+    }
+
+    private void updateSearchNavigationUi() {
+        int total = currentSearchMatches.size();
+        if (total <= 0 || currentSearchMatchIndex < 0) {
+            tvSearchPosition.setText("0 / 0");
+            llSearchNavigationRow.setVisibility(View.GONE);
+            return;
+        }
+        tvSearchPosition.setText((currentSearchMatchIndex + 1) + " / " + total);
+        llSearchNavigationRow.setVisibility(View.VISIBLE);
+    }
+
+    private void focusSearchMatch(int matchIndex) {
+        if (matchIndex < 0 || matchIndex >= currentSearchMatches.size()) return;
+        SearchMatch match = currentSearchMatches.get(matchIndex);
+        pdfView.jumpTo(match.pageIndex, false);
+        pdfView.post(() -> pdfView.post(() -> {
+            if (!isSearchMode || matchIndex != currentSearchMatchIndex) return;
+            RectF bounds = new RectF();
+            if (!pdfOverlay.getSearchMatchBoundsInDocument(matchIndex, bounds)) {
+                pdfOverlay.invalidate();
+                return;
+            }
+            float zoom = pdfView.getZoom();
+            float targetX = pdfView.getWidth() / 2f - bounds.centerX() * zoom;
+            float targetY = pdfView.getHeight() / 2f - bounds.centerY() * zoom;
+            try {
+                pdfView.moveTo(targetX, targetY);
+                pdfView.loadPages();
+            } catch (Exception ignored) {
+                pdfView.jumpTo(match.pageIndex, true);
+            }
+            pdfOverlay.invalidate();
+        }));
+    }
+
+    private void showSearchStatus(String message, boolean isError) {
+        tvSearchStatus.setText(message == null ? "" : message);
+        tvSearchStatus.setTextColor(isError ? 0xFFB71C1C : 0xFF8A5A00);
+        tvSearchStatus.setVisibility(View.VISIBLE);
+    }
+
+    private void hideKeyboard() {
+        View focused = getCurrentFocus();
+        if (focused == null) focused = etSearchKeyword;
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null && focused != null) {
+            imm.hideSoftInputFromWindow(focused.getWindowToken(), 0);
+        }
+        if (focused != null) focused.clearFocus();
+    }
+
+    private void clearPdfSearch() {
+        clearPdfSearch(true);
+    }
+
+    private void clearPdfSearch(boolean showFeedback) {
         currentSearchHighlights.clear();
-        if (overlaySearchHighlighter != null) overlaySearchHighlighter.clear();
+        currentSearchMatches.clear();
+        currentSearchMatchIndex = -1;
         if (pdfOverlay != null) pdfOverlay.clearSearchHighlights();
-        if (showToast) Toast.makeText(this, "已清除搜索高亮", Toast.LENGTH_SHORT).show();
+        if (llSearchNavigationRow != null) llSearchNavigationRow.setVisibility(View.GONE);
+        if (tvSearchPosition != null) tvSearchPosition.setText("0 / 0");
+        if (showFeedback && isSearchMode) {
+            showSearchStatus("已清除搜索结果。", false);
+        }
     }
 
     private void handlePdfLongPress(MotionEvent event) {
-        if (event == null || isEditMode || pdfOverlay == null || pdfView == null || pdfUri == null) {
+        if (event == null || isEditMode || isSearchMode || pdfOverlay == null || pdfView == null || pdfUri == null) {
             return;
         }
 
@@ -698,14 +1048,14 @@ public class PdfViewerActivity extends AppCompatActivity {
                         clearTextSelectionUi();
                         return true;
                     }
-                    if (!isEditMode || currentEditState == EditState.DRAG) {
+                    if (!isEditMode && !isSearchMode) {
                         toggleMenuVisibility();
                     }
                     return true;
                 })
                 .onLongPress(this::handlePdfLongPress)
                 .onPageChange((page, pageCount) -> {
-                    if (!isEditMode) {
+                    if (!isEditMode && !isSearchMode) {
                         tvTopTitle.setText(currentFileName + " (" + (page + 1) + "/" + pageCount + ")");
                     }
                     isAtLastPage = (page == pageCount - 1);
@@ -733,7 +1083,7 @@ public class PdfViewerActivity extends AppCompatActivity {
                         isAtLastPage = true;
 
                         // 1. 强制修正顶部标题的页码显示
-                        if (!isEditMode) {
+                        if (!isEditMode && !isSearchMode) {
                             tvTopTitle.setText(currentFileName + " (" + pageCount + "/" + pageCount + ")");
                         }
 
@@ -753,10 +1103,13 @@ public class PdfViewerActivity extends AppCompatActivity {
                 })
                 // =========================================================================
                 .onLoad(nbPages -> {
+                    if (androidPdfViewerAdapter != null) {
+                        androidPdfViewerAdapter.invalidatePageSizeCache();
+                    }
                     if (pdfOverlay != null) {
                         pdfOverlay.refreshPageGeometry();
                     }
-                    if (!isEditMode) {
+                    if (!isEditMode && !isSearchMode) {
                         tvTopTitle.setText(currentFileName + " (" + (targetPageIndex + 1) + "/" + nbPages + ")");
                     }
                     isAtLastPage = (targetPageIndex == nbPages - 1);
@@ -868,6 +1221,9 @@ public class PdfViewerActivity extends AppCompatActivity {
     }
 
     private void toggleEditMode(boolean enterEdit) {
+        if (enterEdit && isSearchMode) {
+            toggleSearchMode(false);
+        }
         isEditMode = enterEdit;
 
         updateNextVolumeButtonState();
@@ -971,7 +1327,12 @@ public class PdfViewerActivity extends AppCompatActivity {
      * 避免第一页顶部或当前页上沿停留在旧视口之外。</p>
      */
     private void schedulePdfViewportRelayout() {
+        schedulePdfViewportRelayout(null);
+    }
+
+    private void schedulePdfViewportRelayout(Runnable afterRelayout) {
         if (pdfContentFrame == null || pdfView == null || pdfOverlay == null) {
+            if (afterRelayout != null) afterRelayout.run();
             return;
         }
 
@@ -979,6 +1340,7 @@ public class PdfViewerActivity extends AppCompatActivity {
         try {
             positionOffset = pdfView.getPageCount() > 0 ? pdfView.getPositionOffset() : 0f;
         } catch (Exception ignored) {
+            if (afterRelayout != null) afterRelayout.run();
             return;
         }
 
@@ -986,24 +1348,29 @@ public class PdfViewerActivity extends AppCompatActivity {
         pdfView.requestLayout();
         pdfOverlay.requestLayout();
 
-        // 等父布局真正完成高度调整，再恢复位置和刷新渲染/批注坐标。
+        // 等父布局真正完成高度调整，再恢复位置和刷新渲染/批注/搜索坐标。
         pdfContentFrame.post(() -> pdfContentFrame.post(() -> {
-            if (isFinishing() || pdfView.getPageCount() <= 0) {
-                return;
-            }
-            try {
-                pdfView.setPositionOffset(positionOffset, false);
-                pdfView.loadPages();
-            } catch (Exception ignored) {
-                // PDF 尚在异步加载时只刷新布局；onLoad 后会重新建立页面数据。
+            if (isFinishing()) return;
+            if (pdfView.getPageCount() > 0) {
+                try {
+                    pdfView.setPositionOffset(positionOffset, false);
+                    pdfView.loadPages();
+                } catch (Exception ignored) {
+                    // PDF 尚在异步加载时只刷新布局；onLoad 后会重新建立页面数据。
+                }
             }
             pdfOverlay.refreshPageGeometry();
             pdfOverlay.invalidate();
             pdfView.invalidate();
+            if (afterRelayout != null) afterRelayout.run();
         }));
     }
 
     private void handleBackAction() {
+        if (isSearchMode) {
+            toggleSearchMode(false);
+            return;
+        }
         if (isEditMode) {
             new AlertDialog.Builder(this)
                     .setTitle("退出批注模式")
@@ -1175,7 +1542,7 @@ public class PdfViewerActivity extends AppCompatActivity {
     }
 
     private void toggleMenuVisibility() {
-        if (isEditMode) return;
+        if (isEditMode || isSearchMode) return;
         isMenuVisible = !isMenuVisible;
 
         if (isMenuVisible) {
@@ -1201,6 +1568,9 @@ public class PdfViewerActivity extends AppCompatActivity {
         if (isEditMode) {
             popup.getMenu().add(0, 10, 0, "保存批注");
             popup.getMenu().add(0, 11, 1, "退出批注模式");
+        } else if (isSearchMode) {
+            popup.getMenu().add(0, 20, 0, "清除搜索结果");
+            popup.getMenu().add(0, 21, 1, "退出搜索模式");
         } else {
             popup.getMenu().add(0, 1, 0, "批注模式");
             popup.getMenu().add(0, 2, 1, "搜索模式");
@@ -1210,14 +1580,46 @@ public class PdfViewerActivity extends AppCompatActivity {
         popup.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
                 case 1: toggleEditMode(true); return true;
-                case 2: showPdfSearchDialog(); return true;
+                case 2: toggleSearchMode(true); return true;
                 case 3: handleFavoriteToggle(); return true;
                 case 10: handleSaveAction(); return true;
                 case 11: handleBackAction(); return true;
+                case 20: clearPdfSearch(); return true;
+                case 21: toggleSearchMode(false); return true;
                 default: return false;
             }
         });
         popup.show();
+    }
+
+    private static final class SearchMatch {
+        final int pageIndex;
+        final List<AndroidPdfViewerAdapter.ViewerSearchHighlight> rects;
+        final float firstTop;
+        final float firstLeft;
+
+        SearchMatch(
+                int pageIndex,
+                List<AndroidPdfViewerAdapter.ViewerSearchHighlight> rects
+        ) {
+            this.pageIndex = pageIndex;
+            this.rects = rects == null
+                    ? Collections.emptyList()
+                    : Collections.unmodifiableList(new ArrayList<>(rects));
+            float top = Float.MAX_VALUE;
+            float left = Float.MAX_VALUE;
+            for (AndroidPdfViewerAdapter.ViewerSearchHighlight item : this.rects) {
+                if (item == null || item.rectInPageRatio == null) continue;
+                if (item.rectInPageRatio.top < top
+                        || (Float.compare(item.rectInPageRatio.top, top) == 0
+                        && item.rectInPageRatio.left < left)) {
+                    top = item.rectInPageRatio.top;
+                    left = item.rectInPageRatio.left;
+                }
+            }
+            this.firstTop = top == Float.MAX_VALUE ? 0f : top;
+            this.firstLeft = left == Float.MAX_VALUE ? 0f : left;
+        }
     }
 
     private void handleFavoriteToggle() {
@@ -1236,8 +1638,8 @@ public class PdfViewerActivity extends AppCompatActivity {
             textSelectionRepository = null;
         }
         if (pdfSearchManager != null) {
-            pdfSearchManager.cancel();
-            pdfSearchManager.clearCache();
+            pdfSearchManager.close();
+            pdfSearchManager = null;
         }
         super.onDestroy();
     }

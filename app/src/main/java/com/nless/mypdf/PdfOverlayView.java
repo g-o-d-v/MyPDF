@@ -148,8 +148,40 @@ public class PdfOverlayView extends View {
     }
 
     public void setCurrentSearchIndex(int index) {
-        currentSearchIndex = index >= 0 && index < searchHighlights.size() ? index : -1;
+        if (index < 0) {
+            currentSearchIndex = -1;
+        } else {
+            boolean exists = false;
+            for (SearchHighlight highlight : searchHighlights) {
+                if (highlight != null && highlight.matchIndex == index) {
+                    exists = true;
+                    break;
+                }
+            }
+            currentSearchIndex = exists ? index : -1;
+        }
         invalidate();
+    }
+
+    /**
+     * 返回某个逻辑搜索结果在整份 PDF 长画布中的包围框（未乘当前 zoom）。
+     * 跨行结果可能包含多个矩形，这里返回它们的并集，供阅读器精确居中定位。
+     */
+    public boolean getSearchMatchBoundsInDocument(int matchIndex, RectF outRect) {
+        if (outRect == null || matchIndex < 0) return false;
+        boolean found = false;
+        RectF temp = new RectF();
+        for (SearchHighlight highlight : searchHighlights) {
+            if (highlight == null || highlight.matchIndex != matchIndex) continue;
+            if (!resolveSearchHighlightRect(highlight, temp)) continue;
+            if (!found) {
+                outRect.set(temp);
+                found = true;
+            } else {
+                outRect.union(temp);
+            }
+        }
+        return found;
     }
 
     public void setPdfView(PDFView pdfView) {
@@ -610,10 +642,13 @@ public class PdfOverlayView extends View {
         canvas.translate(pdfView.getCurrentXOffset(), pdfView.getCurrentYOffset());
         canvas.scale(pdfView.getZoom(), pdfView.getZoom());
 
-        for (int i = 0; i < searchHighlights.size(); i++) {
-            SearchHighlight highlight = searchHighlights.get(i);
-            if (highlight == null || highlight.rectInDoc == null) continue;
-            canvas.drawRect(highlight.rectInDoc, i == currentSearchIndex ? currentSearchPaint : searchPaint);
+        RectF resolvedSearchRect = new RectF();
+        for (SearchHighlight highlight : searchHighlights) {
+            if (!resolveSearchHighlightRect(highlight, resolvedSearchRect)) continue;
+            canvas.drawRect(
+                    resolvedSearchRect,
+                    highlight.matchIndex == currentSearchIndex ? currentSearchPaint : searchPaint
+            );
         }
 
         drawTextSelection(canvas);
@@ -1191,6 +1226,22 @@ public class PdfOverlayView extends View {
         return null;
     }
 
+    private boolean resolveSearchHighlightRect(SearchHighlight highlight, RectF outRect) {
+        if (highlight == null || highlight.rectInPageRatio == null || outRect == null) {
+            return false;
+        }
+        PageGeometry geometry = getPageGeometry(highlight.pageIndex);
+        if (geometry == null) return false;
+        RectF ratio = highlight.rectInPageRatio;
+        outRect.set(
+                geometry.left + ratio.left * geometry.width,
+                geometry.top + ratio.top * geometry.height,
+                geometry.left + ratio.right * geometry.width,
+                geometry.top + ratio.bottom * geometry.height
+        );
+        return true;
+    }
+
     private PagePoint locatePointOnPage(int pageIndex, float documentX, float documentY, boolean clamp) {
         PageGeometry geometry = getPageGeometry(pageIndex);
         if (geometry == null) {
@@ -1293,11 +1344,13 @@ public class PdfOverlayView extends View {
 
     public static final class SearchHighlight {
         public final int pageIndex;
-        public final RectF rectInDoc;
+        public final RectF rectInPageRatio;
+        public final int matchIndex;
 
-        public SearchHighlight(int pageIndex, RectF rectInDoc) {
+        public SearchHighlight(int pageIndex, RectF rectInPageRatio, int matchIndex) {
             this.pageIndex = pageIndex;
-            this.rectInDoc = rectInDoc;
+            this.rectInPageRatio = rectInPageRatio == null ? null : new RectF(rectInPageRatio);
+            this.matchIndex = matchIndex;
         }
     }
 
