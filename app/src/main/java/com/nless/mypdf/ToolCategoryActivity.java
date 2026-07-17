@@ -17,7 +17,7 @@ import androidx.appcompat.widget.Toolbar;
 /**
  * 工具分类页。
  *
- * 创建 PDF 分类已接入实际处理能力，其他分类仍保留入口和说明 UI。
+ * 创建 PDF、导出与转换分类已接入实际处理能力，其他分类保留入口和说明 UI。
  */
 public class ToolCategoryActivity extends AppCompatActivity {
 
@@ -59,7 +59,7 @@ public class ToolCategoryActivity extends AppCompatActivity {
 
         if (CATEGORY_EXPORT_CONVERT.equals(category)) {
             toolbar.setTitle("导出与转换");
-            categoryFooter.setText("当前仅开放功能入口，点击可查看规划说明。");
+            categoryFooter.setText("导出结果会保存到用户选择的位置；OCR 相关操作均在本机完成。");
             buildExportConvertTools();
         } else if (CATEGORY_MANAGE_PAGES.equals(category)) {
             toolbar.setTitle("管理 PDF 页面");
@@ -104,21 +104,24 @@ public class ToolCategoryActivity extends AppCompatActivity {
                 "扫描件的文本导出和可搜索文字层需要逐页 OCR。页数越多、识别精度越高，处理时间和内存占用越大；识别结果也会受到清晰度、倾斜、字体和版式影响。",
                 true
         );
-        addToolRow(
+        addExportToolRow(
                 "PDF 转图片",
                 "将指定页面或全部页面导出为 PNG/JPEG 图片。",
+                ExportConvertActivity.MODE_PDF_TO_IMAGES,
                 false
         );
         addDivider();
-        addToolRow(
+        addExportToolRow(
                 "导出文本",
                 "文本层 PDF 可直接导出；扫描件需要 OCR，耗时和准确率取决于文档质量。",
+                ExportConvertActivity.MODE_EXPORT_TEXT,
                 true
         );
         addDivider();
-        addToolRow(
+        addExportToolRow(
                 "添加可搜索文字层",
                 "保留扫描页面外观，通过 OCR 生成新的可搜索、可复制 PDF；结果需要人工检查。",
+                ExportConvertActivity.MODE_SEARCHABLE_PDF,
                 true
         );
     }
@@ -187,6 +190,19 @@ public class ToolCategoryActivity extends AppCompatActivity {
         addToolRow(title, description, false, () -> {
             Intent intent = new Intent(this, CreatePdfActivity.class);
             intent.putExtra(CreatePdfActivity.EXTRA_MODE, createMode);
+            startActivity(intent);
+        });
+    }
+
+    private void addExportToolRow(
+            String title,
+            String description,
+            String exportMode,
+            boolean showCaution
+    ) {
+        addToolRow(title, description, showCaution, () -> {
+            Intent intent = new Intent(this, ExportConvertActivity.class);
+            intent.putExtra(ExportConvertActivity.EXTRA_MODE, exportMode);
             startActivity(intent);
         });
     }

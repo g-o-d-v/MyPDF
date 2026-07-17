@@ -46,5 +46,9 @@
             android:name=".CreatePdfActivity"
             android:theme="@style/Theme.MyPDF" />
 
+        <activity
+            android:name=".ExportConvertActivity"
+            android:theme="@style/Theme.MyPDF" />
+
     </application>
 </manifest>
