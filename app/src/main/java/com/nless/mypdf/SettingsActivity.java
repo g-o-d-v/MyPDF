@@ -12,6 +12,7 @@ import android.widget.Toast;
 
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.content.res.AppCompatResources;
 import androidx.appcompat.widget.SwitchCompat;
 import androidx.appcompat.widget.Toolbar;
 
@@ -196,6 +197,12 @@ public class SettingsActivity extends AppCompatActivity {
         SwitchCompat switchView = new SwitchCompat(this);
         switchView.setChecked(initialValue);
         switchView.setShowText(false);
+        switchView.setThumbTintList(
+                AppCompatResources.getColorStateList(this, R.color.switch_thumb_tint)
+        );
+        switchView.setTrackTintList(
+                AppCompatResources.getColorStateList(this, R.color.switch_track_tint)
+        );
         switchView.setContentDescription(title);
         switchView.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,

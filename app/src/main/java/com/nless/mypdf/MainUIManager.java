@@ -86,6 +86,14 @@ public class MainUIManager {
                 }
             } else if (id == R.id.nav_settings) {
                 activity.startActivity(new Intent(activity, SettingsActivity.class));
+            } else if (id == R.id.nav_create_pdf) {
+                openToolCategory(ToolCategoryActivity.CATEGORY_CREATE_PDF);
+            } else if (id == R.id.nav_export_convert) {
+                openToolCategory(ToolCategoryActivity.CATEGORY_EXPORT_CONVERT);
+            } else if (id == R.id.nav_manage_pages) {
+                openToolCategory(ToolCategoryActivity.CATEGORY_MANAGE_PAGES);
+            } else if (id == R.id.nav_pdf_protection) {
+                openToolCategory(ToolCategoryActivity.CATEGORY_PDF_PROTECTION);
             }
             return true;
         });
@@ -106,6 +114,12 @@ public class MainUIManager {
         };
         tvEmptyState.setOnClickListener(pickFileListener);
         fabAdd.setOnClickListener(pickFileListener);
+    }
+
+    private void openToolCategory(String category) {
+        Intent intent = new Intent(activity, ToolCategoryActivity.class);
+        intent.putExtra(ToolCategoryActivity.EXTRA_CATEGORY, category);
+        activity.startActivity(intent);
     }
 
     private void setupRecyclerView() {

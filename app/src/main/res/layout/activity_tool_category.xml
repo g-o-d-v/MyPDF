@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F4F5F7"
+    android:orientation="vertical">
+
+    <androidx.appcompat.widget.Toolbar
+        android:id="@+id/tool_category_toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="?attr/actionBarSize"
+        android:background="?attr/colorPrimary"
+        app:titleTextColor="@color/white" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingBottom="32dp">
+
+            <TextView
+                android:id="@+id/tool_category_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="18dp"
+                android:paddingTop="14dp"
+                android:paddingEnd="18dp"
+                android:paddingBottom="14dp"
+                android:textColor="#6F7378"
+                android:textSize="13sp" />
+
+            <View
+                android:id="@+id/tool_category_hint_gap"
+                android:layout_width="match_parent"
+                android:layout_height="12dp"
+                android:background="#F4F5F7" />
+
+            <LinearLayout
+                android:id="@+id/tool_list_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#FFFFFF"
+                android:orientation="vertical" />
+
+            <TextView
+                android:id="@+id/tool_category_footer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="18dp"
+                android:paddingTop="14dp"
+                android:paddingEnd="18dp"
+                android:paddingBottom="14dp"
+                android:text="当前仅开放功能入口，点击可查看规划说明。"
+                android:textColor="#7A7F85"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+    </ScrollView>
+
+</LinearLayout>

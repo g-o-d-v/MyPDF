@@ -38,5 +38,13 @@
             android:name=".SettingsActivity"
             android:theme="@style/Theme.MyPDF" />
 
+        <activity
+            android:name=".ToolCategoryActivity"
+            android:theme="@style/Theme.MyPDF" />
+
+        <activity
+            android:name=".CreatePdfActivity"
+            android:theme="@style/Theme.MyPDF" />
+
     </application>
 </manifest>
