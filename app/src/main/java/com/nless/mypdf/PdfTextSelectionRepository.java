@@ -115,7 +115,7 @@ public final class PdfTextSelectionRepository implements Closeable {
         return input;
     }
 
-    private static PdfTextPage extractPage(PDDocument document, int pageIndex) throws IOException {
+    static PdfTextPage extractPage(PDDocument document, int pageIndex) throws IOException {
         PDPage page = document.getPage(pageIndex);
         PageTextStripper stripper = new PageTextStripper(pageIndex, page);
         stripper.setStartPage(pageIndex + 1);
@@ -206,7 +206,8 @@ public final class PdfTextSelectionRepository implements Closeable {
                 float right = clamp01((x + width) / sourceWidth);
                 float top = clamp01((baselineY - height) / sourceHeight);
                 // 给下行部件留少量空间，视觉上更接近系统文本选择高亮。
-                float bottom = clamp01((baselineY + height * 0.22f) / sourceHeight);
+                float bottom = clamp01((baselineY
+                        + height * PdfTextGeometry.DESCENT_RATIO) / sourceHeight);
 
                 if (right <= left) right = clamp01(left + 0.001f);
                 if (bottom <= top) bottom = clamp01(top + 0.001f);

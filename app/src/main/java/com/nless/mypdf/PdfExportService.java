@@ -23,11 +23,14 @@ import com.nless.pdf_search_engine.ocr.OcrPageResult;
 import com.nless.pdf_search_engine.ocr.OcrPageSearchListener;
 import com.nless.pdf_search_engine.ocr.OcrSearchEngine;
 import com.nless.pdf_search_engine.ocr.OcrTextBlock;
+import com.tom_roush.fontbox.util.BoundingBox;
 import com.tom_roush.pdfbox.pdmodel.PDDocument;
 import com.tom_roush.pdfbox.pdmodel.PDPage;
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream;
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle;
 import com.tom_roush.pdfbox.pdmodel.font.PDFont;
+import com.tom_roush.pdfbox.pdmodel.font.PDFontDescriptor;
+import com.tom_roush.pdfbox.pdmodel.font.PDType3Font;
 import com.tom_roush.pdfbox.pdmodel.graphics.state.RenderingMode;
 import com.tom_roush.pdfbox.text.PDFTextStripper;
 
@@ -132,98 +135,81 @@ final class PdfExportService {
             try (PdfRenderer renderer = new PdfRenderer(descriptor)) {
                 validateRange(range, renderer.getPageCount());
                 int pageDigits = Math.max(3, String.valueOf(range.endPage + 1).length());
-                int progressUnits = range.count() * 1000;
                 for (int pageIndex = range.startPage; pageIndex <= range.endPage; pageIndex++) {
                     checkCancelled(cancelled);
                     PdfRenderer.Page page = null;
+                    Bitmap bitmap = null;
                     try {
                         page = renderer.openPage(pageIndex);
-                        int renderWidth = Math.max(480, Math.min(4096, options.targetWidth));
-                        float scale = renderWidth / (float) Math.max(1, page.getWidth());
-                        int totalHeight = Math.max(1, (int) Math.ceil(page.getHeight() * (double) scale));
-                        int segmentHeightLimit = resolveImageSegmentHeight(renderWidth);
-                        int segmentCount = Math.max(1,
-                                (int) Math.ceil(totalHeight / (double) segmentHeightLimit));
-                        int segmentDigits = Math.max(2, String.valueOf(segmentCount).length());
+                        int desiredWidth = Math.max(480, Math.min(4096, options.targetWidth));
+                        int renderWidth = resolveSingleImageWidth(
+                                page.getWidth(),
+                                page.getHeight(),
+                                desiredWidth
+                        );
+                        int renderHeight = resolveRenderedHeight(
+                                page.getWidth(),
+                                page.getHeight(),
+                                renderWidth
+                        );
+                        String message = renderWidth < desiredWidth
+                                ? "第 " + (pageIndex + 1) + " 页为超长页面，正在以 "
+                                        + renderWidth + " px 宽度导出为单张图片"
+                                : "正在渲染第 " + (pageIndex + 1) + " 页";
+                        notifyProgress(
+                                callback,
+                                pageIndex - range.startPage,
+                                range.count(),
+                                message
+                        );
 
-                        for (int segment = 0; segment < segmentCount; segment++) {
-                            checkCancelled(cancelled);
-                            int segmentTop = segment * segmentHeightLimit;
-                            int segmentHeight = Math.min(segmentHeightLimit, totalHeight - segmentTop);
-                            int progress = (pageIndex - range.startPage) * 1000
-                                    + Math.round(segment * 1000f / segmentCount);
-                            String segmentMessage = segmentCount == 1
-                                    ? "正在渲染第 " + (pageIndex + 1) + " 页"
-                                    : "正在渲染第 " + (pageIndex + 1) + " 页，分段 "
-                                            + (segment + 1) + " / " + segmentCount;
-                            notifyProgress(callback, progress, progressUnits, segmentMessage);
+                        bitmap = renderSinglePageBitmap(
+                                page,
+                                renderWidth,
+                                renderHeight,
+                                cancelled
+                        );
 
-                            Bitmap bitmap = null;
-                            try {
-                                bitmap = Bitmap.createBitmap(
-                                        renderWidth,
-                                        segmentHeight,
-                                        Bitmap.Config.ARGB_8888
-                                );
-                                Canvas canvas = new Canvas(bitmap);
-                                canvas.drawColor(Color.WHITE);
-                                Matrix transform = new Matrix();
-                                transform.setScale(scale, scale);
-                                transform.postTranslate(0f, -segmentTop);
-                                page.render(
-                                        bitmap,
-                                        null,
-                                        transform,
-                                        PdfRenderer.Page.RENDER_MODE_FOR_PRINT
-                                );
-
-                                String extension = options.format == ImageFormat.JPEG ? "jpg" : "png";
-                                String mime = options.format == ImageFormat.JPEG
-                                        ? "image/jpeg"
-                                        : "image/png";
-                                String pageNumber = String.format(
-                                        Locale.ROOT,
-                                        "%0" + pageDigits + "d",
-                                        pageIndex + 1
-                                );
-                                String part = segmentCount == 1
-                                        ? ""
-                                        : "-part-" + String.format(
-                                                Locale.ROOT,
-                                                "%0" + segmentDigits + "d",
-                                                segment + 1
-                                        );
-                                String safePrefix = sanitizeFileName(options.filePrefix, "page");
-                                DocumentFile output = outputDirectory.createFile(
-                                        mime,
-                                        safePrefix + "-" + pageNumber + part + "." + extension
-                                );
-                                if (output == null) throw new IOException("无法在目标文件夹创建图片");
-                                createdFiles.add(output);
-                                try (OutputStream stream = resolver.openOutputStream(output.getUri(), "w")) {
-                                    if (stream == null) throw new IOException("无法写入导出图片");
-                                    Bitmap.CompressFormat format = options.format == ImageFormat.JPEG
-                                            ? Bitmap.CompressFormat.JPEG
-                                            : Bitmap.CompressFormat.PNG;
-                                    int quality = options.format == ImageFormat.JPEG
-                                            ? Math.max(50, Math.min(100, options.jpegQuality))
-                                            : 100;
-                                    if (!bitmap.compress(format, quality, stream)) {
-                                        throw new IOException("图片编码失败");
-                                    }
-                                }
-                                summary.outputFiles++;
-                            } finally {
-                                if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+                        String extension = options.format == ImageFormat.JPEG ? "jpg" : "png";
+                        String mime = options.format == ImageFormat.JPEG
+                                ? "image/jpeg"
+                                : "image/png";
+                        String pageNumber = String.format(
+                                Locale.ROOT,
+                                "%0" + pageDigits + "d",
+                                pageIndex + 1
+                        );
+                        String safePrefix = sanitizeFileName(options.filePrefix, "page");
+                        DocumentFile output = outputDirectory.createFile(
+                                mime,
+                                safePrefix + "-" + pageNumber + "." + extension
+                        );
+                        if (output == null) throw new IOException("无法在目标文件夹创建图片");
+                        createdFiles.add(output);
+                        try (OutputStream stream = resolver.openOutputStream(output.getUri(), "w")) {
+                            if (stream == null) throw new IOException("无法写入导出图片");
+                            Bitmap.CompressFormat format = options.format == ImageFormat.JPEG
+                                    ? Bitmap.CompressFormat.JPEG
+                                    : Bitmap.CompressFormat.PNG;
+                            int quality = options.format == ImageFormat.JPEG
+                                    ? Math.max(50, Math.min(100, options.jpegQuality))
+                                    : 100;
+                            if (!bitmap.compress(format, quality, stream)) {
+                                throw new IOException("图片编码失败");
                             }
                         }
+                        summary.outputFiles++;
                         summary.processedPages++;
                     } finally {
+                        if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
                         if (page != null) page.close();
                     }
-                    int completed = (pageIndex - range.startPage + 1) * 1000;
-                    notifyProgress(callback, completed, progressUnits,
-                            "已导出第 " + (pageIndex + 1) + " 页");
+                    notifyProgress(
+                            callback,
+                            pageIndex - range.startPage + 1,
+                            range.count(),
+                            "已导出第 " + (pageIndex + 1) + " 页"
+                    );
                 }
             }
         } catch (Exception error) {
@@ -253,14 +239,11 @@ final class PdfExportService {
             try (InputStream input = context.getContentResolver().openInputStream(pdfUri);
                  PDDocument document = PDDocument.load(requireInput(input))) {
                 validateRange(range, document.getNumberOfPages());
-                PDFTextStripper stripper = new PDFTextStripper();
-                stripper.setSortByPosition(true);
                 for (int pageIndex = range.startPage; pageIndex <= range.endPage; pageIndex++) {
                     checkCancelled(cancelled);
                     int local = pageIndex - range.startPage;
-                    stripper.setStartPage(pageIndex + 1);
-                    stripper.setEndPage(pageIndex + 1);
-                    String text = normalizeExtractedText(stripper.getText(document));
+                    PdfTextPage textPage = PdfTextSelectionRepository.extractPage(document, pageIndex);
+                    String text = PdfTextReflow.reflowPage(textPage);
                     pageTexts[local] = text;
                     needOcr[local] = options.mode == TextMode.AUTO && !hasMeaningfulText(text);
                     notifyProgress(callback, local + 1, range.count(),
@@ -453,7 +436,7 @@ final class PdfExportService {
                         ) {
                             int local = pageIndex - range.startPage;
                             if (local >= 0 && local < pageTexts.length && pageResult != null) {
-                                pageTexts[local] = normalizeExtractedText(pageResult.fullText);
+                                pageTexts[local] = PdfTextReflow.reflowOcrPage(pageResult);
                                 summary.ocrPages++;
                             }
                         }
@@ -640,12 +623,31 @@ final class PdfExportService {
                     - bottomRatio * crop.getHeight();
 
             PDFont font = fontResolver.resolve(text, false);
-            float fontSize = Math.max(1f, boxHeight * 0.82f);
+
+            /*
+             * PDFTextStripper 的 TextPosition.getHeight() 并不等于 Tf 字号，而是：
+             * 字体高度系数 × 文本渲染矩阵的 Y 缩放。旧实现直接用 OCR 框高度
+             * 乘 0.82 作为字号，CJK 字体的高度系数通常明显小于 1，导致重新读取
+             * 生成的文字层时，选择框只有原 OCR 框的一部分。
+             *
+             * PdfTextSelectionRepository 的选择框从 baseline-height 延伸到
+             * baseline+height*DESCENT_RATIO，因此这里反向计算 TextPosition 应有的
+             * height，并据字体实际指标计算 Tf 字号。这样再次长按时，选择框上下边界
+             * 会尽量还原 OCR 检测框，而不是受不同系统字体指标影响。
+             */
+            float textPositionHeight = Math.max(0.5f,
+                    boxHeight / PdfTextGeometry.SELECTION_SPAN_FACTOR);
+            float fontHeightFactor = resolveLegacyTextHeightFactor(font);
+            float fontSize = Math.max(0.5f, textPositionHeight / fontHeightFactor);
+
             float naturalWidth = font.getStringWidth(text) / 1000f * fontSize;
             if (naturalWidth <= 0f) return false;
-            float horizontalScale = Math.max(10f, Math.min(500f,
+            float horizontalScale = Math.max(5f, Math.min(1000f,
                     boxWidth / naturalWidth * 100f));
-            float baseline = bottom + Math.max(0f, (boxHeight - fontSize) * 0.20f);
+
+            // 令解析后的 baseline-height == OCR 顶边，
+            // baseline+height*DESCENT_RATIO == OCR 底边。
+            float baseline = bottom + boxHeight - textPositionHeight;
 
             boolean beganText = false;
             try {
@@ -667,6 +669,52 @@ final class PdfExportService {
         } catch (Throwable ignore) {
             return false;
         }
+    }
+
+    /**
+     * 复现 PdfBox 2.0.x LegacyPDFStreamEngine 用于 TextPosition.maxHeight 的
+     * 字体高度计算。PDFTextStripper 本身依赖这套兼容算法，因此写入 OCR 文字层时
+     * 使用相同指标，才能让再次提取到的文本选择框高度接近原 OCR 框。
+     */
+    private static float resolveLegacyTextHeightFactor(PDFont font) throws IOException {
+        BoundingBox bbox = font.getBoundingBox();
+        float lowerLeftY = bbox.getLowerLeftY();
+        if (lowerLeftY < Short.MIN_VALUE) {
+            lowerLeftY = -(lowerLeftY + 65536f);
+        }
+        float glyphHeight = (bbox.getUpperRightY() - lowerLeftY) / 2f;
+
+        PDFontDescriptor descriptor = font.getFontDescriptor();
+        if (descriptor != null) {
+            float capHeight = descriptor.getCapHeight();
+            if (Float.compare(capHeight, 0f) != 0
+                    && (capHeight < glyphHeight || Float.compare(glyphHeight, 0f) == 0)) {
+                glyphHeight = capHeight;
+            }
+
+            float ascent = descriptor.getAscent();
+            float descent = descriptor.getDescent();
+            float ascentDescentHeight = (ascent - descent) / 2f;
+            if (capHeight > ascent && ascent > 0f && descent < 0f
+                    && (ascentDescentHeight < glyphHeight
+                    || Float.compare(glyphHeight, 0f) == 0)) {
+                glyphHeight = ascentDescentHeight;
+            }
+        }
+
+        float factor;
+        if (font instanceof PDType3Font) {
+            factor = font.getFontMatrix().transformPoint(0f, glyphHeight).y;
+        } else {
+            factor = glyphHeight / 1000f;
+        }
+        factor = Math.abs(factor);
+        // 异常字体指标不能让字号无限放大；常规 CJK/拉丁字体通常位于 0.35～1.2。
+        if (Float.isNaN(factor) || Float.isInfinite(factor)
+                || factor < 0.05f || factor > 4f) {
+            return 0.7f;
+        }
+        return factor;
     }
 
     private static List<int[]> contiguousRuns(PageRange range, boolean[] required) {
@@ -716,10 +764,89 @@ final class PdfExportService {
         return false;
     }
 
-    private static int resolveImageSegmentHeight(int width) {
-        // 限制单个 ARGB 位图约 12M 像素；超长 PDF 页面按纵向分段，避免缩窄后失去可读性。
-        int byPixels = Math.max(512, 12_000_000 / Math.max(1, width));
-        return Math.max(512, Math.min(8192, byPixels));
+    private static int resolveSingleImageWidth(
+            int sourceWidth,
+            int sourceHeight,
+            int desiredWidth
+    ) throws IOException {
+        if (sourceWidth <= 0 || sourceHeight <= 0) {
+            throw new IOException("PDF 页面尺寸无效");
+        }
+        double aspect = sourceHeight / (double) sourceWidth;
+        long maxPixels = resolveSafeSingleImagePixels();
+        int byPixels = (int) Math.floor(Math.sqrt(maxPixels / Math.max(0.0001d, aspect)));
+        int byHeight = (int) Math.floor(32_000d / Math.max(0.0001d, aspect));
+        int resolved = Math.min(desiredWidth, Math.min(byPixels, byHeight));
+        if (resolved < 160) {
+            throw new IOException("页面过长，无法在当前设备上导出为单张图片");
+        }
+        return resolved;
+    }
+
+    private static int resolveRenderedHeight(
+            int sourceWidth,
+            int sourceHeight,
+            int renderWidth
+    ) throws IOException {
+        long height = Math.max(1L, Math.round(
+                sourceHeight * (double) renderWidth / Math.max(1, sourceWidth)
+        ));
+        if (height > 32_000L) {
+            throw new IOException("页面过长，导出图片高度超过设备支持范围");
+        }
+        return (int) height;
+    }
+
+    private static long resolveSafeSingleImagePixels() {
+        // ARGB_8888 每像素约 4 字节。动态使用可用堆的一部分，并把单张位图限制在
+        // 约 24~64 MiB，避免长页导出触发主进程连续阻塞 GC。
+        Runtime runtime = Runtime.getRuntime();
+        long used = runtime.totalMemory() - runtime.freeMemory();
+        long available = Math.max(0L, runtime.maxMemory() - used);
+        long safeBytes = Math.min(64L * 1024L * 1024L, available / 3L);
+        safeBytes = Math.max(24L * 1024L * 1024L, safeBytes);
+        return Math.max(6_000_000L, Math.min(16_000_000L, safeBytes / 4L));
+    }
+
+    private static Bitmap renderSinglePageBitmap(
+            PdfRenderer.Page page,
+            int renderWidth,
+            int renderHeight,
+            AtomicBoolean cancelled
+    ) throws IOException {
+        int width = renderWidth;
+        int height = renderHeight;
+        for (int attempt = 0; attempt < 4; attempt++) {
+            checkCancelled(cancelled);
+            Bitmap bitmap = null;
+            try {
+                bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+                Canvas canvas = new Canvas(bitmap);
+                canvas.drawColor(Color.WHITE);
+                float scale = width / (float) Math.max(1, page.getWidth());
+                Matrix transform = new Matrix();
+                transform.setScale(scale, scale);
+                page.render(
+                        bitmap,
+                        null,
+                        transform,
+                        PdfRenderer.Page.RENDER_MODE_FOR_PRINT
+                );
+                return bitmap;
+            } catch (OutOfMemoryError | IllegalArgumentException error) {
+                if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+                int nextWidth = Math.max(160, Math.round(width * 0.78f));
+                if (nextWidth >= width || attempt == 3) {
+                    throw new IOException(
+                            "设备内存不足，无法把该长页面导出为单张图片。请降低图像清晰度后重试。",
+                            error
+                    );
+                }
+                width = nextWidth;
+                height = resolveRenderedHeight(page.getWidth(), page.getHeight(), width);
+            }
+        }
+        throw new IOException("长页面图片渲染失败");
     }
 
     private static void validateRange(PageRange range, int pageCount) {

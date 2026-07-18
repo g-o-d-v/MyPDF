@@ -330,7 +330,7 @@ public class ExportConvertActivity extends AppCompatActivity {
         } else if (MODE_SEARCHABLE_PDF.equals(mode)) {
             tipView.setText("OCR 文字会以不可见方式写入，不会覆盖或改变扫描页面的可见内容。识别错误只会影响搜索、选择和复制结果。旋转页面首版会跳过文字层写入，并在完成结果中提示。始终另存为新 PDF。");
         } else {
-            tipView.setText("PNG 适合文字、线稿和无损保存；JPEG 文件通常更小，适合照片类页面。超长 PDF 页面会自动纵向分段，避免整页缩窄后文字难以辨认。每个分段会保存为独立图片。");
+            tipView.setText("PNG 适合文字、线稿和无损保存；JPEG 文件通常更小，适合照片类页面。每个 PDF 页面只导出一张图片；超长页面会在保持完整内容的前提下自动降低输出宽度，避免切段时把文字从中间截断。");
         }
     }
 

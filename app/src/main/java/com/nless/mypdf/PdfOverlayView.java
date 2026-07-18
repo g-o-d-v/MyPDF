@@ -419,21 +419,11 @@ public class PdfOverlayView extends View {
 
     public String getSelectedText() {
         if (!hasTextSelection()) return "";
-        StringBuilder output = new StringBuilder();
-        PdfTextPage.Glyph previous = null;
-        for (int i = textSelectionStart; i <= textSelectionEnd; i++) {
-            PdfTextPage.Glyph glyph = selectedTextPage.glyphs.get(i);
-            if (previous != null) {
-                String separator = glyph.separatorBefore;
-                if (separator == null || separator.isEmpty()) {
-                    if (glyph.lineIndex != previous.lineIndex) separator = "\n";
-                }
-                if (separator != null && !separator.isEmpty()) output.append(separator);
-            }
-            output.append(glyph.text);
-            previous = glyph;
-        }
-        return output.toString();
+        return PdfTextReflow.reflowSelection(
+                selectedTextPage,
+                textSelectionStart,
+                textSelectionEnd
+        );
     }
 
     /**

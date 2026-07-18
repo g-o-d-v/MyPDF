@@ -63,7 +63,7 @@ public class ToolCategoryActivity extends AppCompatActivity {
             buildExportConvertTools();
         } else if (CATEGORY_MANAGE_PAGES.equals(category)) {
             toolbar.setTitle("管理 PDF 页面");
-            categoryFooter.setText("当前仅开放功能入口，点击可查看规划说明。");
+            categoryFooter.setText("页面操作会另存为新的 PDF，原文件不会被修改。");
             buildManagePageTools();
         } else if (CATEGORY_PDF_PROTECTION.equals(category)) {
             toolbar.setTitle("PDF 保护");
@@ -131,28 +131,28 @@ public class ToolCategoryActivity extends AppCompatActivity {
                 "页面操作默认另存为新文件，避免处理中断或参数错误损坏原 PDF。",
                 false
         );
-        addToolRow(
+        addManageToolRow(
                 "页面排序",
                 "通过缩略图拖动调整 PDF 页面顺序。",
-                false
+                ManagePdfPagesActivity.MODE_REORDER
         );
         addDivider();
-        addToolRow(
+        addManageToolRow(
                 "删除页面",
                 "选择一个或多个页面并生成删除后的 PDF 副本。",
-                false
+                ManagePdfPagesActivity.MODE_DELETE
         );
         addDivider();
-        addToolRow(
+        addManageToolRow(
                 "另存所选页面",
                 "把选中的页面保留为新的 PDF，继续保留文本层和矢量内容。",
-                false
+                ManagePdfPagesActivity.MODE_SAVE_SELECTED
         );
         addDivider();
-        addToolRow(
+        addManageToolRow(
                 "合并 PDF",
                 "选择多个 PDF，调整文件顺序后合并为一个新文件。",
-                false
+                ManagePdfPagesActivity.MODE_MERGE
         );
     }
 
@@ -190,6 +190,15 @@ public class ToolCategoryActivity extends AppCompatActivity {
         addToolRow(title, description, false, () -> {
             Intent intent = new Intent(this, CreatePdfActivity.class);
             intent.putExtra(CreatePdfActivity.EXTRA_MODE, createMode);
+            startActivity(intent);
+        });
+    }
+
+
+    private void addManageToolRow(String title, String description, String manageMode) {
+        addToolRow(title, description, false, () -> {
+            Intent intent = new Intent(this, ManagePdfPagesActivity.class);
+            intent.putExtra(ManagePdfPagesActivity.EXTRA_MODE, manageMode);
             startActivity(intent);
         });
     }

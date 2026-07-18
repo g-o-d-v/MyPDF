@@ -50,5 +50,15 @@
             android:name=".ExportConvertActivity"
             android:theme="@style/Theme.MyPDF" />
 
+        <activity
+            android:name=".ManagePdfPagesActivity"
+            android:theme="@style/Theme.MyPDF" />
+
+        <service
+            android:name=".PdfMergeWorkerService"
+            android:exported="false"
+            android:process=":pdf_merge"
+            android:stopWithTask="true" />
+
     </application>
 </manifest>
