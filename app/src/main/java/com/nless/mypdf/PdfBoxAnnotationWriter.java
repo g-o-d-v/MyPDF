@@ -1,7 +1,9 @@
 package com.nless.mypdf;
 
+import android.content.Context;
 import android.graphics.Color;
 import android.graphics.PointF;
+import android.net.Uri;
 
 import com.tom_roush.pdfbox.pdmodel.PDDocument;
 import com.tom_roush.pdfbox.pdmodel.PDPage;
@@ -9,6 +11,8 @@ import com.tom_roush.pdfbox.pdmodel.PDPageContentStream;
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle;
 import com.tom_roush.pdfbox.pdmodel.font.PDFont;
 import com.tom_roush.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState;
+import com.tom_roush.pdfbox.pdmodel.encryption.AccessPermission;
+import com.tom_roush.pdfbox.pdmodel.encryption.StandardProtectionPolicy;
 import com.tom_roush.pdfbox.util.Matrix;
 
 import java.io.InputStream;
@@ -21,21 +25,53 @@ final class PdfBoxAnnotationWriter {
     private PdfBoxAnnotationWriter() {}
 
     static void write(
-            InputStream source,
+            Context context,
+            Uri sourceUri,
+            String fallbackPath,
             OutputStream target,
             List<PdfOverlayView.AnnotationAction> actions,
-            List<PdfOverlayView.PageMetrics> pageMetrics
+            List<PdfOverlayView.PageMetrics> pageMetrics,
+            String openPassword,
+            String managementPassword,
+            PdfSecurityContext.Info securityInfo
     ) throws Exception {
         if (actions == null || actions.isEmpty()) {
-            copy(source, target);
+            try (InputStream source = PdfSecurityContext.openInput(context, sourceUri, fallbackPath)) {
+                copy(source, target);
+            }
             return;
         }
         if (pageMetrics == null || pageMetrics.isEmpty()) {
             throw new IllegalStateException("PDF 页面尺寸尚未初始化");
         }
 
-        try (PDDocument document = PDDocument.load(source);
+        String effectiveOpenPassword = openPassword == null ? "" : openPassword;
+        String effectiveManagementPassword = managementPassword == null ? "" : managementPassword;
+        boolean restricted = securityInfo != null && securityInfo.encrypted && securityInfo.hasRestrictions();
+        String loadPassword = restricted ? effectiveManagementPassword : effectiveOpenPassword;
+        if (restricted && effectiveManagementPassword.isEmpty()) {
+            throw new IllegalStateException("需要权限管理密码才能保存批注并保留原有权限");
+        }
+
+        try (PDDocument document = PdfSecurityContext.loadDocument(
+                context,
+                sourceUri,
+                fallbackPath,
+                loadPassword,
+                "pdfbox-annotation-write"
+        );
              PdfSystemFontResolver fontResolver = new PdfSystemFontResolver(document, "PdfAnnotationFont")) {
+            boolean encrypted = document.isEncrypted();
+            AccessPermission declaredPermission = encrypted && document.getEncryption() != null
+                    ? new AccessPermission(document.getEncryption().getPermissions())
+                    : AccessPermission.getOwnerAccessPermission();
+            // 始终按加密字典中声明的“批注权限”判断，而不是按当前密码身份
+            // 或“允许修改内容”兜底。这样禁止批注时，即使使用所有者密码打开，
+            // MyPDF 也不会绕过用户设置。
+            if (encrypted && !declaredPermission.canModifyAnnotations()) {
+                throw new IllegalStateException("文档权限禁止添加或修改批注");
+            }
+
             for (PdfOverlayView.AnnotationAction action : actions) {
                 if (action.pageIndex < 0 || action.pageIndex >= document.getNumberOfPages()) continue;
                 if (action.pageIndex >= pageMetrics.size()) continue;
@@ -61,6 +97,21 @@ final class PdfBoxAnnotationWriter {
                             break;
                     }
                 }
+            }
+            if (encrypted) {
+                String ownerPassword = restricted
+                        ? effectiveManagementPassword
+                        : effectiveOpenPassword;
+                StandardProtectionPolicy policy = new StandardProtectionPolicy(
+                        ownerPassword,
+                        effectiveOpenPassword,
+                        declaredPermission
+                );
+                policy.setPermissions(declaredPermission);
+                policy.setEncryptionKeyLength(128);
+                policy.setPreferAES(true);
+                if (document.getVersion() < 1.6f) document.setVersion(1.6f);
+                document.protect(policy);
             }
             // 子集字体必须在 document.save() 时仍保持底层字体文件打开。
             document.save(target);

@@ -54,6 +54,10 @@
             android:name=".ManagePdfPagesActivity"
             android:theme="@style/Theme.MyPDF" />
 
+        <activity
+            android:name=".PdfProtectionActivity"
+            android:theme="@style/Theme.MyPDF" />
+
         <service
             android:name=".PdfMergeWorkerService"
             android:exported="false"

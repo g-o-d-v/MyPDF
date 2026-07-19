@@ -67,7 +67,7 @@ public class ToolCategoryActivity extends AppCompatActivity {
             buildManagePageTools();
         } else if (CATEGORY_PDF_PROTECTION.equals(category)) {
             toolbar.setTitle("PDF 保护");
-            categoryFooter.setText("当前仅开放功能入口，点击可查看规划说明。");
+            categoryFooter.setText("所有保护相关操作都默认另存为新的 PDF，避免直接修改原文件。");
             buildProtectionTools();
         } else {
             toolbar.setTitle("创建 PDF");
@@ -161,21 +161,24 @@ public class ToolCategoryActivity extends AppCompatActivity {
                 "PDF 权限限制需要其他阅读器主动遵守，并不等同于不可绕过的 DRM。所有操作应优先另存为副本。",
                 true
         );
-        addToolRow(
+        addProtectionToolRow(
                 "设置/移除密码",
                 "设置打开密码，或在已知密码的情况下移除保护。",
+                PdfProtectionActivity.MODE_PASSWORD,
                 false
         );
         addDivider();
-        addToolRow(
+        addProtectionToolRow(
                 "权限限制",
                 "设置打印、复制、修改和添加批注等权限。",
+                PdfProtectionActivity.MODE_PERMISSIONS,
                 true
         );
         addDivider();
-        addToolRow(
+        addProtectionToolRow(
                 "清除元数据",
                 "清除标题、作者、主题、关键词、创建程序、日期和 XMP 等文档属性。",
+                PdfProtectionActivity.MODE_METADATA,
                 false
         );
     }
@@ -199,6 +202,16 @@ public class ToolCategoryActivity extends AppCompatActivity {
         addToolRow(title, description, false, () -> {
             Intent intent = new Intent(this, ManagePdfPagesActivity.class);
             intent.putExtra(ManagePdfPagesActivity.EXTRA_MODE, manageMode);
+            startActivity(intent);
+        });
+    }
+
+
+
+    private void addProtectionToolRow(String title, String description, String protectionMode, boolean showCaution) {
+        addToolRow(title, description, showCaution, () -> {
+            Intent intent = new Intent(this, PdfProtectionActivity.class);
+            intent.putExtra(PdfProtectionActivity.EXTRA_MODE, protectionMode);
             startActivity(intent);
         });
     }

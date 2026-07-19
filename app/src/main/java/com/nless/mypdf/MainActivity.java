@@ -263,6 +263,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void performPhysicalDelete(PdfItem item) {
+        if (item != null && item.isFolder) {
+            removePdfItemFromApp(item);
+            Toast.makeText(this, "已从列表中移除文件夹，未删除文件夹及其中任何文件", Toast.LENGTH_LONG).show();
+            return;
+        }
         deleteFilePhysically(item, success -> {
             if (success) {
                 uiManager.removePdfItemFromUI(item);
@@ -288,8 +293,8 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
 
-                if (!success && item.uri != null) {
-                    DocumentFile docFile = item.isFolder ? DocumentFile.fromTreeUri(this, item.uri) : DocumentFile.fromSingleUri(this, item.uri);
+                if (!success && item.uri != null && !item.isFolder) {
+                    DocumentFile docFile = DocumentFile.fromSingleUri(this, item.uri);
                     if (docFile != null && docFile.exists()) {
                         success = docFile.delete();
                     }
@@ -310,62 +315,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void showFileDetailsDialog(PdfItem item) {
-        executorService.execute(() -> {
-            StringBuilder detailsBuilder = new StringBuilder();
-            try {
-                DocumentFile docFile = item.isFolder ? DocumentFile.fromTreeUri(this, item.uri) : DocumentFile.fromSingleUri(this, item.uri);
-
-                String sizeStr = "未知";
-                if (docFile != null && docFile.exists() && !item.isFolder) {
-                    long bytes = docFile.length();
-                    if (bytes > 1024 * 1024) {
-                        sizeStr = String.format(Locale.getDefault(), "%.2f MB", bytes / (1024f * 1024f));
-                    } else {
-                        sizeStr = String.format(Locale.getDefault(), "%.2f KB", bytes / 1024f);
-                    }
-                } else if (item.isFolder) {
-                    sizeStr = "文件夹";
-                }
-
-                boolean isFav = dbHelper.isFavorite(item.path, item.name);
-
-                String createTimeStr = item.time;
-                String isModifiedStr = "否";
-                String modifiedTimeStr = "无";
-
-                android.database.sqlite.SQLiteDatabase db = dbHelper.getReadableDatabase();
-                android.database.Cursor cursor = db.rawQuery("SELECT createTime, lastModified FROM items WHERE uri=?", new String[]{item.uri.toString()});
-                if (cursor.moveToFirst()) {
-                    long cTime = cursor.getLong(cursor.getColumnIndexOrThrow("createTime"));
-                    long mTime = cursor.getLong(cursor.getColumnIndexOrThrow("lastModified"));
-                    if (cTime > 0) createTimeStr = dateFormat.format(new Date(cTime));
-                    if (mTime > 0) {
-                        isModifiedStr = "是";
-                        modifiedTimeStr = dateFormat.format(new Date(mTime));
-                    }
-                }
-                cursor.close();
-
-                detailsBuilder.append("名称：").append(item.name).append("\n\n");
-                detailsBuilder.append("创建时间：").append(createTimeStr).append("\n\n");
-                detailsBuilder.append("是否修改：").append(isModifiedStr).append("\n\n");
-                detailsBuilder.append("修改时间：").append(modifiedTimeStr).append("\n\n");
-                detailsBuilder.append("是否收藏：").append(isFav ? "是" : "否").append("\n\n");
-                detailsBuilder.append("文件大小：").append(sizeStr);
-
-            } catch (Exception e) {
-                detailsBuilder.append("获取详情失败：").append(e.getMessage());
-            }
-
-            String finalDetails = detailsBuilder.toString();
-            runOnUiThread(() -> {
-                new AlertDialog.Builder(this)
-                        .setTitle("属性详情")
-                        .setMessage(finalDetails)
-                        .setPositiveButton("我知道了", null)
-                        .show();
-            });
-        });
+        PdfFileDetailsDialog.show(this, item, dbHelper, executorService);
     }
 
     public void loadHomeData() {

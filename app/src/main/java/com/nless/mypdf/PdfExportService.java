@@ -36,6 +36,7 @@ import com.tom_roush.pdfbox.text.PDFTextStripper;
 
 import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -106,8 +107,7 @@ final class PdfExportService {
     }
 
     static int readPageCount(Context context, Uri pdfUri) throws Exception {
-        try (ParcelFileDescriptor descriptor = context.getContentResolver()
-                .openFileDescriptor(pdfUri, "r")) {
+        try (ParcelFileDescriptor descriptor = openFileDescriptor(context, pdfUri)) {
             if (descriptor == null) throw new IOException("无法打开 PDF 文件");
             try (PdfRenderer renderer = new PdfRenderer(descriptor)) {
                 return renderer.getPageCount();
@@ -130,7 +130,7 @@ final class PdfExportService {
         ResultSummary summary = new ResultSummary();
         List<DocumentFile> createdFiles = new ArrayList<>();
         ContentResolver resolver = context.getContentResolver();
-        try (ParcelFileDescriptor descriptor = resolver.openFileDescriptor(pdfUri, "r")) {
+        try (ParcelFileDescriptor descriptor = openFileDescriptor(context, pdfUri)) {
             if (descriptor == null) throw new IOException("无法打开 PDF 文件");
             try (PdfRenderer renderer = new PdfRenderer(descriptor)) {
                 validateRange(range, renderer.getPageCount());
@@ -236,7 +236,7 @@ final class PdfExportService {
 
         if (options.mode != TextMode.OCR_ONLY) {
             notifyProgress(callback, 0, range.count(), "正在读取 PDF 文本层");
-            try (InputStream input = context.getContentResolver().openInputStream(pdfUri);
+            try (InputStream input = openInput(context, pdfUri);
                  PDDocument document = PDDocument.load(requireInput(input))) {
                 validateRange(range, document.getNumberOfPages());
                 for (int pageIndex = range.startPage; pageIndex <= range.endPage; pageIndex++) {
@@ -317,7 +317,7 @@ final class PdfExportService {
         boolean[] needOcr = new boolean[range.count()];
 
         // 第一阶段只判断哪些页面需要 OCR，随后立即关闭文档，降低 OCR 期间的内存占用。
-        try (InputStream input = context.getContentResolver().openInputStream(pdfUri);
+        try (InputStream input = openInput(context, pdfUri);
              PDDocument inspectionDocument = PDDocument.load(requireInput(input))) {
             validateRange(range, inspectionDocument.getNumberOfPages());
             if (options.scope == SearchableScope.ALL_SELECTED) {
@@ -355,7 +355,7 @@ final class PdfExportService {
 
         // 第二阶段重新加载原 PDF，将 OCR 文字作为不可见内容流写入，然后另存完整副本。
         checkCancelled(cancelled);
-        try (InputStream input = context.getContentResolver().openInputStream(pdfUri);
+        try (InputStream input = openInput(context, pdfUri);
              PDDocument document = PDDocument.load(requireInput(input));
              PdfSystemFontResolver fontResolver =
                      new PdfSystemFontResolver(document, "PdfSearchableLayerFont")) {
@@ -917,4 +917,23 @@ final class PdfExportService {
         while (text.endsWith(".")) text = text.substring(0, text.length() - 1);
         return text.isEmpty() ? fallback : text;
     }
+
+    private static ParcelFileDescriptor openFileDescriptor(Context context, Uri uri) throws IOException {
+        if (uri != null && "file".equalsIgnoreCase(uri.getScheme()) && uri.getPath() != null) {
+            return ParcelFileDescriptor.open(new File(uri.getPath()), ParcelFileDescriptor.MODE_READ_ONLY);
+        }
+        ParcelFileDescriptor descriptor = context.getContentResolver().openFileDescriptor(uri, "r");
+        if (descriptor == null) throw new IOException("无法打开 PDF 文件");
+        return descriptor;
+    }
+
+    private static InputStream openInput(Context context, Uri uri) throws IOException {
+        if (uri != null && "file".equalsIgnoreCase(uri.getScheme()) && uri.getPath() != null) {
+            return new FileInputStream(new File(uri.getPath()));
+        }
+        InputStream input = context.getContentResolver().openInputStream(uri);
+        if (input == null) throw new IOException("无法读取 PDF 文件");
+        return input;
+    }
+
 }

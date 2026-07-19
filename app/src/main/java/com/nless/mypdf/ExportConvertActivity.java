@@ -62,6 +62,13 @@ public class ExportConvertActivity extends AppCompatActivity {
 
     private String mode = MODE_PDF_TO_IMAGES;
     private Uri sourceUri;
+    private Uri workingSourceUri;
+    private File unlockedSourceTemp;
+    private String sourcePassword = "";
+    private PdfSecurityContext.Info sourceSecurityInfo;
+    private String searchableOpenPassword = "";
+    private String searchableManagementPassword = "";
+    private boolean passwordDialogShowing;
     private String sourceName = "";
     private int sourcePageCount;
     private int customStartPage = 1;
@@ -172,6 +179,7 @@ public class ExportConvertActivity extends AppCompatActivity {
     protected void onDestroy() {
         cancelled.set(true);
         workerExecutor.shutdownNow();
+        deleteUnlockedSourceTemp();
         super.onDestroy();
     }
 
@@ -207,6 +215,8 @@ public class ExportConvertActivity extends AppCompatActivity {
                         ? "点击右侧按钮选择本地 PDF 文件"
                         : sourcePageCount > 0
                                 ? sourcePageCount + " 页"
+                                    + (sourceSecurityInfo != null && sourceSecurityInfo.hasRestrictions()
+                                        ? " · 有权限限制" : "")
                                 : "正在读取文件信息……",
                 12, TEXT_SECONDARY, false);
         sourceDetailView.setPadding(0, dp(6), 0, 0);
@@ -335,7 +345,17 @@ public class ExportConvertActivity extends AppCompatActivity {
     }
 
     private void inspectSource(Uri uri) {
+        inspectSourceWithPassword(uri, "", false);
+    }
+
+    private void inspectSourceWithPassword(Uri uri, String password, boolean retry) {
+        deleteUnlockedSourceTemp();
         sourceUri = uri;
+        workingSourceUri = null;
+        sourcePassword = password == null ? "" : password;
+        sourceSecurityInfo = null;
+        searchableOpenPassword = "";
+        searchableManagementPassword = "";
         sourceName = queryDisplayName(uri);
         sourcePageCount = 0;
         customStartPage = 1;
@@ -344,9 +364,35 @@ public class ExportConvertActivity extends AppCompatActivity {
         refreshActionButton();
         workerExecutor.execute(() -> {
             try {
-                int count = PdfExportService.readPageCount(this, uri);
+                PdfSecurityContext.Info info = PdfSecurityContext.inspect(
+                        this,
+                        uri,
+                        null,
+                        sourcePassword
+                );
+                File unlocked = null;
+                Uri processUri = uri;
+                if (info.encrypted) {
+                    unlocked = PdfSecurityContext.createDecryptedTemp(
+                            this,
+                            uri,
+                            null,
+                            sourcePassword,
+                            "export-unlocked-"
+                    );
+                    processUri = Uri.fromFile(unlocked);
+                }
+                int count = PdfExportService.readPageCount(this, processUri);
+                File finalUnlocked = unlocked;
+                Uri finalProcessUri = processUri;
                 runOnUiThread(() -> {
-                    if (!uri.equals(sourceUri)) return;
+                    if (!uri.equals(sourceUri)) {
+                        if (finalUnlocked != null) finalUnlocked.delete();
+                        return;
+                    }
+                    unlockedSourceTemp = finalUnlocked;
+                    workingSourceUri = finalProcessUri;
+                    sourceSecurityInfo = info;
                     sourcePageCount = count;
                     customStartPage = 1;
                     customEndPage = Math.max(1, count);
@@ -357,14 +403,61 @@ public class ExportConvertActivity extends AppCompatActivity {
             } catch (Exception error) {
                 runOnUiThread(() -> {
                     if (!uri.equals(sourceUri)) return;
-                    sourceUri = null;
-                    sourcePageCount = 0;
-                    buildSourceCard();
-                    refreshActionButton();
-                    showError("无法读取 PDF", error);
+                    if (PdfSecurityContext.isPasswordError(error)) {
+                        showSourcePasswordDialog(uri, retry);
+                    } else {
+                        sourceUri = null;
+                        workingSourceUri = null;
+                        sourcePageCount = 0;
+                        buildSourceCard();
+                        refreshActionButton();
+                        showError("无法读取 PDF", error);
+                    }
                 });
             }
         });
+    }
+
+    private void showSourcePasswordDialog(Uri uri, boolean wrongPassword) {
+        if (passwordDialogShowing) return;
+        passwordDialogShowing = true;
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        input.setHint("请输入 PDF 密码");
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(wrongPassword ? "密码不正确" : "PDF 已加密")
+                .setMessage("请输入打开密码或所有者密码后继续。密码只保存在本次应用运行期间。")
+                .setView(input)
+                .setNegativeButton("取消", (d, which) -> {
+                    passwordDialogShowing = false;
+                    sourceUri = null;
+                    workingSourceUri = null;
+                    sourcePageCount = 0;
+                    buildSourceCard();
+                    refreshActionButton();
+                })
+                .setPositiveButton("确定", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String password = input.getText().toString();
+                    if (password.isEmpty()) {
+                        input.setError("请输入密码");
+                        return;
+                    }
+                    passwordDialogShowing = false;
+                    dialog.dismiss();
+                    inspectSourceWithPassword(uri, password, true);
+                }));
+        dialog.show();
+    }
+
+    private void deleteUnlockedSourceTemp() {
+        if (unlockedSourceTemp != null && unlockedSourceTemp.exists()) {
+            unlockedSourceTemp.delete();
+        }
+        unlockedSourceTemp = null;
     }
 
     private void startSelectedOperation() {
@@ -374,6 +467,20 @@ public class ExportConvertActivity extends AppCompatActivity {
         }
         PdfExportService.PageRange range = readPageRange();
         if (range == null) return;
+        if (sourceSecurityInfo != null) {
+            if ((MODE_EXPORT_TEXT.equals(mode) || MODE_PDF_TO_IMAGES.equals(mode))
+                    && !sourceSecurityInfo.canCopyOrExportText()) {
+                Toast.makeText(this, "文档权限禁止复制或提取内容", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (MODE_SEARCHABLE_PDF.equals(mode)
+                    && !sourceSecurityInfo.canCreateSearchableLayer()) {
+                Toast.makeText(this,
+                        "文档权限禁止修改页面内容，无法添加可搜索文字层",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+        }
         Runnable launch = () -> {
             if (MODE_EXPORT_TEXT.equals(mode)) {
                 textOutputPicker.launch(baseName(sourceName) + ".txt");
@@ -383,17 +490,29 @@ public class ExportConvertActivity extends AppCompatActivity {
                 outputFolderPicker.launch(null);
             }
         };
-        if (operationMayUseOcr() && range.count() >= 10) {
-            new AlertDialog.Builder(this)
-                    .setTitle("OCR 处理提示")
-                    .setMessage("所选范围共 " + range.count()
-                            + " 页。OCR 需要逐页渲染和识别，可能耗时较长并占用较多内存；"
-                            + "扫描清晰度、倾斜、字体和复杂版式也会影响结果。建议处理期间保持应用在前台，并在完成后抽查文字。")
-                    .setNegativeButton("取消", null)
-                    .setPositiveButton("继续", (dialog, which) -> launch.run())
-                    .show();
+        Runnable launchWithOcrWarning = () -> {
+            if (operationMayUseOcr() && range.count() >= 10) {
+                new AlertDialog.Builder(this)
+                        .setTitle("OCR 处理提示")
+                        .setMessage("所选范围共 " + range.count()
+                                + " 页。OCR 需要逐页渲染和识别，可能耗时较长并占用较多内存；"
+                                + "扫描清晰度、倾斜、字体和复杂版式也会影响结果。建议处理期间保持应用在前台，并在完成后抽查文字。")
+                        .setNegativeButton("取消", null)
+                        .setPositiveButton("继续", (dialog, which) -> launch.run())
+                        .show();
+            } else {
+                launch.run();
+            }
+        };
+        if (MODE_SEARCHABLE_PDF.equals(mode)
+                && sourceSecurityInfo != null
+                && sourceSecurityInfo.encrypted
+                && sourceSecurityInfo.hasRestrictions()) {
+            showSearchableProtectionDialog(launchWithOcrWarning);
         } else {
-            launch.run();
+            searchableOpenPassword = sourcePassword == null ? "" : sourcePassword;
+            searchableManagementPassword = "";
+            launchWithOcrWarning.run();
         }
     }
 
@@ -414,7 +533,7 @@ public class ExportConvertActivity extends AppCompatActivity {
             try {
                 PdfExportService.ResultSummary summary = PdfExportService.exportPagesToImages(
                         this,
-                        sourceUri,
+                        workingSourceUri == null ? sourceUri : workingSourceUri,
                         directory,
                         range,
                         options,
@@ -458,7 +577,7 @@ public class ExportConvertActivity extends AppCompatActivity {
                 temp = File.createTempFile("mypdf-export-text-", ".txt", getCacheDir());
                 PdfExportService.ResultSummary summary = PdfExportService.exportText(
                         this,
-                        sourceUri,
+                        workingSourceUri == null ? sourceUri : workingSourceUri,
                         temp,
                         range,
                         options,
@@ -497,6 +616,86 @@ public class ExportConvertActivity extends AppCompatActivity {
         });
     }
 
+    private void showSearchableProtectionDialog(Runnable onValidated) {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(20), dp(4), dp(20), 0);
+
+        TextView openLabel = text("当前打开密码（没有则留空）", 14, TEXT_PRIMARY, false);
+        EditText openInput = new EditText(this);
+        openInput.setSingleLine(true);
+        openInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        openInput.setHint("用于保持生成文件原有的打开方式");
+        openInput.setText(sourcePassword == null ? "" : sourcePassword);
+        openInput.setBackgroundResource(R.drawable.bg_creation_input);
+        openInput.setPadding(dp(12), dp(10), dp(12), dp(10));
+
+        TextView ownerLabel = text("权限管理密码", 14, TEXT_PRIMARY, false);
+        ownerLabel.setPadding(0, dp(14), 0, 0);
+        EditText ownerInput = new EditText(this);
+        ownerInput.setSingleLine(true);
+        ownerInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        ownerInput.setHint("用于验证并恢复现有权限限制");
+        ownerInput.setBackgroundResource(R.drawable.bg_creation_input);
+        ownerInput.setPadding(dp(12), dp(10), dp(12), dp(10));
+
+        content.addView(openLabel, matchWrap());
+        LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(match(), wrap());
+        inputParams.topMargin = dp(7);
+        content.addView(openInput, inputParams);
+        content.addView(ownerLabel, matchWrap());
+        LinearLayout.LayoutParams ownerParams = new LinearLayout.LayoutParams(match(), wrap());
+        ownerParams.topMargin = dp(7);
+        content.addView(ownerInput, ownerParams);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("保留现有权限保护")
+                .setMessage("添加文字层会修改 PDF 页面内容。当前权限允许修改，因此可以继续；为避免生成结果丢失原有密码和权限，请验证权限管理密码。")
+                .setView(content)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("验证并继续", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String openPassword = openInput.getText().toString();
+                    String managementPassword = ownerInput.getText().toString();
+                    if (managementPassword.isEmpty()) {
+                        ownerInput.setError("请输入权限管理密码");
+                        return;
+                    }
+                    if (!openPassword.isEmpty() && TextUtils.equals(openPassword, managementPassword)) {
+                        ownerInput.setError("权限管理密码不能与打开密码相同");
+                        return;
+                    }
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+                    Toast.makeText(this, "正在验证权限管理密码…", Toast.LENGTH_SHORT).show();
+                    workerExecutor.execute(() -> {
+                        try {
+                            PdfSecurityContext.Info managementInfo = PdfSecurityContext.inspect(
+                                    this, sourceUri, null, managementPassword);
+                            if (!managementInfo.ownerPermission) {
+                                throw new IllegalStateException("权限管理密码不正确");
+                            }
+                            if (!openPassword.isEmpty()) {
+                                PdfSecurityContext.inspect(this, sourceUri, null, openPassword);
+                            }
+                            runOnUiThread(() -> {
+                                searchableOpenPassword = openPassword;
+                                searchableManagementPassword = managementPassword;
+                                dialog.dismiss();
+                                if (onValidated != null) onValidated.run();
+                            });
+                        } catch (Throwable error) {
+                            runOnUiThread(() -> {
+                                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                                ownerInput.setError(PdfSecurityContext.readableError(error));
+                            });
+                        }
+                    });
+                }));
+        dialog.show();
+    }
+
     private void createSearchablePdf(Uri outputUri) {
         PdfExportService.PageRange range = readPageRange();
         if (range == null) return;
@@ -513,13 +712,29 @@ public class ExportConvertActivity extends AppCompatActivity {
                 temp = File.createTempFile("mypdf-searchable-", ".pdf", getCacheDir());
                 PdfExportService.ResultSummary summary = PdfExportService.createSearchablePdf(
                         this,
-                        sourceUri,
+                        workingSourceUri == null ? sourceUri : workingSourceUri,
                         temp,
                         range,
                         options,
                         cancelled,
                         this::postProgress
                 );
+                if (sourceSecurityInfo != null && sourceSecurityInfo.encrypted) {
+                    postProgress(1, 1, "正在恢复原有密码和权限保护");
+                    String userPassword = sourceSecurityInfo.hasRestrictions()
+                            ? searchableOpenPassword
+                            : sourcePassword;
+                    String ownerPassword = sourceSecurityInfo.hasRestrictions()
+                            ? searchableManagementPassword
+                            : sourcePassword;
+                    PdfSecurityContext.protectFileWithPolicy(
+                            this,
+                            temp,
+                            userPassword,
+                            ownerPassword,
+                            sourceSecurityInfo.declaredPermissionBits
+                    );
+                }
                 postProgress(1, 1, "正在写入保存位置");
                 copyTempToUri(temp, outputUri);
                 String outputName = queryDisplayName(outputUri);
@@ -541,6 +756,9 @@ public class ExportConvertActivity extends AppCompatActivity {
                     if (finalSummary.failedPages > 0) {
                         message.append("\n\n有 ").append(finalSummary.failedPages)
                                 .append(" 页未成功写入（包括旋转页或识别失败页）。");
+                    }
+                    if (sourceSecurityInfo != null && sourceSecurityInfo.encrypted) {
+                        message.append("\n\n已保留源文件的打开密码和权限限制。");
                     }
                     message.append("\n\nOCR 结果可能存在错误，建议用搜索和复制功能抽查。");
                     showSearchableSuccess(outputUri, outputName, message.toString());

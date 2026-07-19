@@ -10,6 +10,8 @@ import com.tom_roush.pdfbox.pdmodel.PDDocument;
 import com.tom_roush.pdfbox.pdmodel.PDPage;
 import com.tom_roush.pdfbox.pdmodel.PDPageTree;
 import com.tom_roush.pdfbox.pdmodel.PDResources;
+import com.tom_roush.pdfbox.pdmodel.encryption.AccessPermission;
+import com.tom_roush.pdfbox.pdmodel.encryption.StandardProtectionPolicy;
 
 import java.io.File;
 import java.io.IOException;
@@ -39,13 +41,27 @@ final class PdfPageManagementService {
     static ResultSummary reorderPages(
             Context context,
             Uri sourceUri,
+            String password,
+            String ownerPassword,
+            PdfSecurityContext.Info securityInfo,
             File target,
             List<Integer> order,
             AtomicBoolean cancelled,
             ProgressCallback callback
     ) throws Exception {
-        try (InputStream input = requireInput(context, sourceUri);
-             PDDocument document = PDDocument.load(input)) {
+        long loadStarted = android.os.SystemClock.elapsedRealtime();
+        try (PDDocument document = PdfSecurityContext.loadDocument(
+                context,
+                sourceUri,
+                null,
+                password,
+                "pdfbox-page-management"
+        )) {
+            android.util.Log.d(
+                    "PdfManagePerf",
+                    "PDFBox load=" + (android.os.SystemClock.elapsedRealtime() - loadStarted)
+                            + "ms, encrypted=" + (securityInfo != null && securityInfo.encrypted)
+            );
             int pageCount = document.getNumberOfPages();
             validateCompleteOrder(order, pageCount);
             checkCancelled(cancelled);
@@ -66,8 +82,18 @@ final class PdfPageManagementService {
                         "正在写入第 " + (outputIndex + 1) + " / " + pageCount + " 页");
             }
             checkCancelled(cancelled);
+            prepareOutputProtection(document, securityInfo, password, ownerPassword);
             notifyProgress(callback, 1, 1, "正在保存排序后的 PDF");
+            long saveStarted = android.os.SystemClock.elapsedRealtime();
             document.save(target);
+            if (securityInfo != null && securityInfo.encrypted) {
+                PdfSecurityContext.validateProtectedFile(context, target, password);
+            }
+            android.util.Log.d(
+                    "PdfManagePerf",
+                    "PDFBox save=" + (android.os.SystemClock.elapsedRealtime() - saveStarted)
+                            + "ms, encrypted=" + (securityInfo != null && securityInfo.encrypted)
+            );
 
             ResultSummary summary = new ResultSummary();
             summary.sourcePages = pageCount;
@@ -80,13 +106,27 @@ final class PdfPageManagementService {
     static ResultSummary deletePages(
             Context context,
             Uri sourceUri,
+            String password,
+            String ownerPassword,
+            PdfSecurityContext.Info securityInfo,
             File target,
             List<Integer> deletedPages,
             AtomicBoolean cancelled,
             ProgressCallback callback
     ) throws Exception {
-        try (InputStream input = requireInput(context, sourceUri);
-             PDDocument document = PDDocument.load(input)) {
+        long loadStarted = android.os.SystemClock.elapsedRealtime();
+        try (PDDocument document = PdfSecurityContext.loadDocument(
+                context,
+                sourceUri,
+                null,
+                password,
+                "pdfbox-page-management"
+        )) {
+            android.util.Log.d(
+                    "PdfManagePerf",
+                    "PDFBox load=" + (android.os.SystemClock.elapsedRealtime() - loadStarted)
+                            + "ms, encrypted=" + (securityInfo != null && securityInfo.encrypted)
+            );
             int pageCount = document.getNumberOfPages();
             Set<Integer> deleted = validatePageSet(deletedPages, pageCount, false);
             if (deleted.isEmpty()) throw new IOException("请先选择要删除的页面");
@@ -101,8 +141,18 @@ final class PdfPageManagementService {
                         "正在处理第 " + (pageCount - i) + " / " + pageCount + " 页");
             }
             checkCancelled(cancelled);
+            prepareOutputProtection(document, securityInfo, password, ownerPassword);
             notifyProgress(callback, 1, 1, "正在保存删除页面后的 PDF");
+            long saveStarted = android.os.SystemClock.elapsedRealtime();
             document.save(target);
+            if (securityInfo != null && securityInfo.encrypted) {
+                PdfSecurityContext.validateProtectedFile(context, target, password);
+            }
+            android.util.Log.d(
+                    "PdfManagePerf",
+                    "PDFBox save=" + (android.os.SystemClock.elapsedRealtime() - saveStarted)
+                            + "ms, encrypted=" + (securityInfo != null && securityInfo.encrypted)
+            );
 
             ResultSummary summary = new ResultSummary();
             summary.sourcePages = pageCount;
@@ -115,13 +165,27 @@ final class PdfPageManagementService {
     static ResultSummary saveSelectedPages(
             Context context,
             Uri sourceUri,
+            String password,
+            String ownerPassword,
+            PdfSecurityContext.Info securityInfo,
             File target,
             List<Integer> selectedPages,
             AtomicBoolean cancelled,
             ProgressCallback callback
     ) throws Exception {
-        try (InputStream input = requireInput(context, sourceUri);
-             PDDocument document = PDDocument.load(input)) {
+        long loadStarted = android.os.SystemClock.elapsedRealtime();
+        try (PDDocument document = PdfSecurityContext.loadDocument(
+                context,
+                sourceUri,
+                null,
+                password,
+                "pdfbox-page-management"
+        )) {
+            android.util.Log.d(
+                    "PdfManagePerf",
+                    "PDFBox load=" + (android.os.SystemClock.elapsedRealtime() - loadStarted)
+                            + "ms, encrypted=" + (securityInfo != null && securityInfo.encrypted)
+            );
             int pageCount = document.getNumberOfPages();
             Set<Integer> selected = validatePageSet(selectedPages, pageCount, true);
             if (selected.isEmpty()) throw new IOException("请先选择要另存的页面");
@@ -135,8 +199,18 @@ final class PdfPageManagementService {
                         "正在筛选第 " + (pageCount - i) + " / " + pageCount + " 页");
             }
             checkCancelled(cancelled);
+            prepareOutputProtection(document, securityInfo, password, ownerPassword);
             notifyProgress(callback, 1, 1, "正在保存所选页面");
+            long saveStarted = android.os.SystemClock.elapsedRealtime();
             document.save(target);
+            if (securityInfo != null && securityInfo.encrypted) {
+                PdfSecurityContext.validateProtectedFile(context, target, password);
+            }
+            android.util.Log.d(
+                    "PdfManagePerf",
+                    "PDFBox save=" + (android.os.SystemClock.elapsedRealtime() - saveStarted)
+                            + "ms, encrypted=" + (securityInfo != null && securityInfo.encrypted)
+            );
 
             ResultSummary summary = new ResultSummary();
             summary.sourcePages = pageCount;
@@ -144,6 +218,41 @@ final class PdfPageManagementService {
             summary.sourceFiles = 1;
             return summary;
         }
+    }
+
+
+    /**
+     * 在同一次 PDFBox 保存中恢复源文件的打开密码保护，避免旧流程先保存明文副本、
+     * 再重新打开并加密一次所产生的第二次完整解析和第二次完整写盘。
+     */
+    private static void prepareOutputProtection(
+            PDDocument document,
+            PdfSecurityContext.Info securityInfo,
+            String password,
+            String ownerPassword
+    ) throws IOException {
+        if (document == null || securityInfo == null || !securityInfo.encrypted) return;
+        AccessPermission permission = new AccessPermission(securityInfo.declaredPermissionBits);
+        String effectivePassword = password == null ? "" : password;
+        String effectiveOwnerPassword = securityInfo.hasRestrictions()
+                ? (ownerPassword == null ? "" : ownerPassword)
+                : effectivePassword;
+        if (securityInfo.hasRestrictions() && effectiveOwnerPassword.isEmpty()) {
+            throw new IOException("需要权限管理密码才能保留原有权限限制");
+        }
+        StandardProtectionPolicy policy = new StandardProtectionPolicy(
+                effectiveOwnerPassword,
+                effectivePassword,
+                permission
+        );
+        policy.setPermissions(permission);
+        policy.setEncryptionKeyLength(128);
+        policy.setPreferAES(true);
+        if (document.getVersion() < 1.6f) document.setVersion(1.6f);
+        // 对已加密文档直接设置新的保护策略。不要先调用
+        // setAllSecurityToBeRemoved(true)：PDFBox 会为 protect() 自动切换状态，
+        // 提前设置会触发警告，并可能让重写后的加密字典与密码不一致。
+        document.protect(policy);
     }
 
     static ResultSummary mergePdfs(

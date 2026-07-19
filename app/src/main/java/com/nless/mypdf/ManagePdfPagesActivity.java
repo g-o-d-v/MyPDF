@@ -10,11 +10,13 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.ResultReceiver;
 import android.provider.OpenableColumns;
+import android.text.InputType;
 import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -75,6 +77,12 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
 
     private String mode = MODE_REORDER;
     private Uri sourceUri;
+    private Uri workingSourceUri;
+    private File unlockedSourceTemp;
+    private String sourcePassword = "";
+    private String sourceManagementPassword = "";
+    private PdfSecurityContext.Info sourceSecurityInfo;
+    private boolean passwordDialogShowing;
     private String sourceName = "";
     private int sourcePageCount;
     private PdfThumbnailRepository thumbnailRepository;
@@ -159,6 +167,7 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
             PdfMergeWorkerService.cancel(this, activeMergeTaskId);
         }
         closeThumbnailRepository();
+        deleteUnlockedSourceTemp();
         workerExecutor.shutdownNow();
         super.onDestroy();
     }
@@ -435,8 +444,17 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
     }
 
     private void inspectPageSource(Uri uri) {
+        inspectPageSourceWithPassword(uri, "", false);
+    }
+
+    private void inspectPageSourceWithPassword(Uri uri, String password, boolean retry) {
         closeThumbnailRepository();
+        deleteUnlockedSourceTemp();
         sourceUri = uri;
+        workingSourceUri = null;
+        sourcePassword = password == null ? "" : password;
+        sourceManagementPassword = "";
+        sourceSecurityInfo = null;
         sourceName = queryDisplayName(uri);
         sourcePageCount = 0;
         pageItems.clear();
@@ -450,8 +468,29 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
         workerExecutor.execute(() -> {
             PdfThumbnailRepository repository = null;
             try {
-                repository = new PdfThumbnailRepository(this, uri);
+                long inspectStarted = android.os.SystemClock.elapsedRealtime();
+                PdfSecurityContext.Info cached = PdfSecurityContext.getCached(this, uri, null, sourcePassword);
+                PdfSecurityContext.Info security;
+                if (cached != null && android.text.TextUtils.equals(cached.password, sourcePassword)) {
+                    security = cached;
+                } else {
+                    security = PdfSecurityContext.inspect(this, uri, null, sourcePassword);
+                }
+                long inspectElapsed = android.os.SystemClock.elapsedRealtime() - inspectStarted;
+                if (!security.canManagePages()) {
+                    throw new IllegalStateException("文档权限禁止页面整理、删除或另存页面。请在“PDF 保护 → 权限限制”中开启“允许修改内容”后重试");
+                }
+
+                long rendererStarted = android.os.SystemClock.elapsedRealtime();
+                // Pdfium 可以直接使用密码打开加密 PDF。这里不再先生成完整的解密临时副本。
+                repository = new PdfThumbnailRepository(this, uri, sourcePassword);
                 int pageCount = repository.getPageCount();
+                long rendererElapsed = android.os.SystemClock.elapsedRealtime() - rendererStarted;
+                android.util.Log.d(
+                        "PdfManagePerf",
+                        "source ready: inspect=" + inspectElapsed + "ms, renderer="
+                                + rendererElapsed + "ms, encrypted=" + security.encrypted
+                );
                 if (pageCount <= 0) throw new IllegalStateException("PDF 没有可管理的页面");
                 List<PageItem> loaded = new ArrayList<>(pageCount);
                 for (int i = 0; i < pageCount; i++) loaded.add(new PageItem(i));
@@ -462,6 +501,9 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
                         return;
                     }
                     thumbnailRepository = readyRepository;
+                    unlockedSourceTemp = null;
+                    workingSourceUri = uri;
+                    sourceSecurityInfo = security;
                     sourcePageCount = pageCount;
                     pageItems.clear();
                     pageItems.addAll(loaded);
@@ -474,19 +516,72 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
             } catch (Exception error) {
                 if (repository != null) repository.close();
                 runOnUiThread(() -> {
-                    if (sourceUri != null && expectedUri.equals(sourceUri.toString())) {
-                        sourceUri = null;
-                        sourceName = "";
-                        sourcePageCount = 0;
-                        buildPageSourceCard();
-                        buildPageControlCard();
-                        updateEmptyState();
-                        refreshActionButton();
-                        showError("读取失败", error);
+                    if (sourceUri == null || !expectedUri.equals(sourceUri.toString())) return;
+                    if (PdfSecurityContext.isPasswordError(error)) {
+                        showPagePasswordDialog(uri, retry);
+                        return;
                     }
+                    clearPageSourceAfterFailure();
+                    showError("读取失败", error);
                 });
             }
         });
+    }
+
+    private void showPagePasswordDialog(Uri uri, boolean wrongPassword) {
+        if (passwordDialogShowing) return;
+        passwordDialogShowing = true;
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        input.setHint("请输入 PDF 打开密码");
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(wrongPassword ? "密码不正确" : "PDF 有打开密码")
+                .setMessage("输入正确密码后可读取页面。若文档另有权限限制，仍会按权限设置阻止页面管理。")
+                .setView(input)
+                .setNegativeButton("取消", (d, which) -> {
+                    passwordDialogShowing = false;
+                    clearPageSourceAfterFailure();
+                })
+                .setPositiveButton("确定", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String password = input.getText().toString();
+                    if (password.isEmpty()) {
+                        input.setError("请输入密码");
+                        return;
+                    }
+                    passwordDialogShowing = false;
+                    dialog.dismiss();
+                    inspectPageSourceWithPassword(uri, password, true);
+                }));
+        dialog.show();
+    }
+
+    private void clearPageSourceAfterFailure() {
+        closeThumbnailRepository();
+        deleteUnlockedSourceTemp();
+        sourceUri = null;
+        workingSourceUri = null;
+        sourcePassword = "";
+        sourceManagementPassword = "";
+        sourceSecurityInfo = null;
+        sourceName = "";
+        sourcePageCount = 0;
+        pageItems.clear();
+        if (pageAdapter != null) pageAdapter.notifyDataSetChanged();
+        buildPageSourceCard();
+        buildPageControlCard();
+        updateEmptyState();
+        refreshActionButton();
+    }
+
+    private void deleteUnlockedSourceTemp() {
+        if (unlockedSourceTemp != null && unlockedSourceTemp.exists()) {
+            unlockedSourceTemp.delete();
+        }
+        unlockedSourceTemp = null;
     }
 
     private void addMergeSources(List<Uri> uris) {
@@ -513,12 +608,21 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
     private void inspectMergeItem(MergeItem item) {
         workerExecutor.execute(() -> {
             try {
+                PdfSecurityContext.Info security = PdfSecurityContext.inspect(this, item.uri, null, "");
+                if (!security.canManagePages()) {
+                    throw new IllegalStateException("该 PDF 的权限禁止页面组合或内容修改，无法参与合并");
+                }
+                if (security.encrypted) {
+                    throw new IllegalStateException("该 PDF 带有密码或权限保护。合并多个文件时无法可靠保留每个源文件不同的保护策略，请先生成无保护副本后再合并");
+                }
                 int pages = PdfThumbnailRepository.countPages(this, item.uri);
                 item.pageCount = pages;
                 item.readError = false;
+                item.errorMessage = "";
             } catch (Exception error) {
                 item.pageCount = 0;
                 item.readError = true;
+                item.errorMessage = readableError(error);
             }
             runOnUiThread(() -> {
                 if (mergeItems.contains(item)) {
@@ -565,7 +669,98 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
 
     private void chooseOutput() {
         if (!isOperationReady()) return;
+        launchPageOutputPicker();
+    }
+
+    private void launchPageOutputPicker() {
+        if (sourceSecurityInfo != null
+                && sourceSecurityInfo.encrypted
+                && sourceSecurityInfo.hasRestrictions()) {
+            showPageProtectionManagementDialog(
+                    () -> outputPicker.launch(defaultOutputName()));
+            return;
+        }
+        sourceManagementPassword = "";
         outputPicker.launch(defaultOutputName());
+    }
+
+    private void showPageProtectionManagementDialog(Runnable onValidated) {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(20), dp(4), dp(20), 0);
+
+        TextView openLabel = text("当前打开密码（没有则留空）", 14, TEXT_PRIMARY, false);
+        EditText openInput = new EditText(this);
+        openInput.setSingleLine(true);
+        openInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        openInput.setHint("用于保持生成文件原有的打开方式");
+        openInput.setText(sourcePassword == null ? "" : sourcePassword);
+        openInput.setBackgroundResource(R.drawable.bg_creation_input);
+        openInput.setPadding(dp(12), dp(10), dp(12), dp(10));
+
+        TextView ownerLabel = text("权限管理密码", 14, TEXT_PRIMARY, false);
+        ownerLabel.setPadding(0, dp(14), 0, 0);
+        EditText ownerInput = new EditText(this);
+        ownerInput.setSingleLine(true);
+        ownerInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        ownerInput.setHint("用于恢复生成文件的原有权限限制");
+        ownerInput.setBackgroundResource(R.drawable.bg_creation_input);
+        ownerInput.setPadding(dp(12), dp(10), dp(12), dp(10));
+
+        content.addView(openLabel, matchWrap());
+        LinearLayout.LayoutParams openParams = new LinearLayout.LayoutParams(match(), wrap());
+        openParams.topMargin = dp(7);
+        content.addView(openInput, openParams);
+        content.addView(ownerLabel, matchWrap());
+        LinearLayout.LayoutParams ownerParams = new LinearLayout.LayoutParams(match(), wrap());
+        ownerParams.topMargin = dp(7);
+        content.addView(ownerInput, ownerParams);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("保留现有权限保护")
+                .setMessage("当前权限允许页面管理。为了让生成文件继续保持原有打开密码和权限限制，需要验证权限管理密码。")
+                .setView(content)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("验证并继续", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String openPassword = openInput.getText().toString();
+                    String managementPassword = ownerInput.getText().toString();
+                    if (managementPassword.isEmpty()) {
+                        ownerInput.setError("请输入权限管理密码");
+                        return;
+                    }
+                    if (!openPassword.isEmpty() && TextUtils.equals(openPassword, managementPassword)) {
+                        ownerInput.setError("权限管理密码不能与打开密码相同");
+                        return;
+                    }
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+                    workerExecutor.execute(() -> {
+                        try {
+                            PdfSecurityContext.Info managementInfo = PdfSecurityContext.inspect(
+                                    this, sourceUri, null, managementPassword);
+                            if (!managementInfo.ownerPermission) {
+                                throw new IllegalStateException("权限管理密码不正确");
+                            }
+                            if (!openPassword.isEmpty()) {
+                                PdfSecurityContext.inspect(this, sourceUri, null, openPassword);
+                            }
+                            runOnUiThread(() -> {
+                                sourcePassword = openPassword;
+                                sourceManagementPassword = managementPassword;
+                                dialog.dismiss();
+                                if (onValidated != null) onValidated.run();
+                            });
+                        } catch (Throwable error) {
+                            runOnUiThread(() -> {
+                                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                                ownerInput.setError(PdfSecurityContext.readableError(error));
+                            });
+                        }
+                    });
+                }));
+        dialog.show();
     }
 
     private boolean isOperationReady() {
@@ -576,7 +771,9 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
             }
             for (MergeItem item : mergeItems) {
                 if (item.readError) {
-                    Toast.makeText(this, "列表中存在无法读取的 PDF", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this,
+                            TextUtils.isEmpty(item.errorMessage) ? "列表中存在无法读取的 PDF" : item.errorMessage,
+                            Toast.LENGTH_LONG).show();
                     return false;
                 }
             }
@@ -604,7 +801,7 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
                     .setTitle("页面顺序未改变")
                     .setMessage("当前页面顺序与原 PDF 相同。仍然可以生成完整副本，是否继续？")
                     .setNegativeButton("取消", null)
-                    .setPositiveButton("继续", (dialog, which) -> outputPicker.launch(defaultOutputName()))
+                    .setPositiveButton("继续", (dialog, which) -> launchPageOutputPicker())
                     .show();
             return false;
         }
@@ -622,16 +819,27 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
             try {
                 temp = File.createTempFile("mypdf-pages-", ".pdf", getCacheDir());
                 PdfPageManagementService.ResultSummary summary;
+                long operationStarted = android.os.SystemClock.elapsedRealtime();
                 if (MODE_DELETE.equals(mode)) {
                     summary = PdfPageManagementService.deletePages(
-                            this, sourceUri, temp, selectedOriginalPages(), cancelled, this::postProgress);
+                            this, sourceUri, sourcePassword, sourceManagementPassword,
+                            sourceSecurityInfo, temp, selectedOriginalPages(), cancelled, this::postProgress);
                 } else if (MODE_SAVE_SELECTED.equals(mode)) {
                     summary = PdfPageManagementService.saveSelectedPages(
-                            this, sourceUri, temp, selectedOriginalPages(), cancelled, this::postProgress);
+                            this, sourceUri, sourcePassword, sourceManagementPassword,
+                            sourceSecurityInfo, temp, selectedOriginalPages(), cancelled, this::postProgress);
                 } else {
                     summary = PdfPageManagementService.reorderPages(
-                            this, sourceUri, temp, currentOrder(), cancelled, this::postProgress);
+                            this, sourceUri, sourcePassword, sourceManagementPassword,
+                            sourceSecurityInfo, temp, currentOrder(), cancelled, this::postProgress);
                 }
+                android.util.Log.d(
+                        "PdfManagePerf",
+                        "page operation finished in "
+                                + (android.os.SystemClock.elapsedRealtime() - operationStarted)
+                                + "ms, encrypted="
+                                + (sourceSecurityInfo != null && sourceSecurityInfo.encrypted)
+                );
                 postProgress(1, 1, "正在写入保存位置");
                 copyTempToUri(temp, outputUri);
                 String outputName = queryDisplayName(outputUri);
@@ -906,7 +1114,7 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
         try (InputStream input = new FileInputStream(temp);
              OutputStream output = getContentResolver().openOutputStream(outputUri, "w")) {
             if (output == null) throw new IllegalStateException("无法写入所选保存位置");
-            byte[] buffer = new byte[64 * 1024];
+            byte[] buffer = new byte[1024 * 1024];
             int read;
             while ((read = input.read(buffer)) >= 0) {
                 if (cancelled.get()) throw new IllegalStateException("操作已取消");
@@ -1082,6 +1290,7 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
         final String name;
         int pageCount = -1;
         boolean readError;
+        String errorMessage = "";
 
         MergeItem(Uri uri, String name) {
             this.uri = uri;
@@ -1221,7 +1430,9 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
             holder.name.setEllipsize(TextUtils.TruncateAt.MIDDLE);
             holder.name.setMaxLines(2);
             if (item.readError) {
-                holder.detail.setText("无法读取，请移除或重新选择");
+                holder.detail.setText(TextUtils.isEmpty(item.errorMessage)
+                        ? "无法读取，请移除或重新选择"
+                        : item.errorMessage);
                 holder.detail.setTextColor(0xFFD04444);
             } else if (item.pageCount < 0) {
                 holder.detail.setText("正在读取页数……");

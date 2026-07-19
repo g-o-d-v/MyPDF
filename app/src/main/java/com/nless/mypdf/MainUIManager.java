@@ -191,7 +191,9 @@ public class MainUIManager {
             popup.getMenu().add(Menu.NONE, 1, 0, "取消收藏");
         }
 
-        popup.getMenu().add(Menu.NONE, 2, 0, "彻底删除");
+        if (!item.isFolder) {
+            popup.getMenu().add(Menu.NONE, 2, 0, "彻底删除");
+        }
         popup.getMenu().add(Menu.NONE, 3, 0, "详情");
 
         popup.setOnMenuItemClickListener(menuItem -> {
@@ -218,7 +220,7 @@ public class MainUIManager {
                 case 2:
                     new AlertDialog.Builder(activity)
                             .setTitle("警告：彻底删除")
-                            .setMessage("该操作将永久删除磁盘上的此文件，不可恢复！确认删除吗？")
+                            .setMessage("该操作将永久删除磁盘上的此 PDF 文件，不可恢复！确认删除吗？")
                             .setPositiveButton("彻底删除", (d, w) -> {
                                 mainAct.performPhysicalDelete(item);
                             })

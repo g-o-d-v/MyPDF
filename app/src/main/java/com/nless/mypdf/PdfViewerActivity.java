@@ -11,6 +11,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Bundle;
+import android.util.Log;
 import android.view.ActionMode;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -44,6 +45,7 @@ import com.nless.pdf_search_engine.core.PdfSearchSource;
 //import com.github.barteksc.pdfviewer.scroll.DefaultScrollHandle; // 🌟 引入原生滑动条组件
 
 
+import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -74,6 +76,22 @@ public class PdfViewerActivity extends AppCompatActivity {
     private String pdfPath = "";
     private String pdfName = "";
     private Uri pdfUri;
+    private Uri workingPdfUri;
+    // 仅在密码文档首次使用搜索时生成；阅读本身直接由 Pdfium 使用密码打开原文件。
+    private Uri searchWorkingPdfUri;
+    private File unlockedPdfTempFile;
+    private boolean encryptedSearchPreparationRunning;
+    private String pendingEncryptedSearchKeyword;
+    private PdfSearchMode pendingEncryptedSearchMode;
+    private String pdfPassword = "";
+    private PdfSecurityContext.Info pdfSecurityInfo;
+    private boolean securityInspectionRunning;
+    private final List<Runnable> pendingSecurityActions = new ArrayList<>();
+    private boolean passwordDialogShowing;
+    private boolean directPasswordFallbackAttempted;
+    private String annotationOpenPassword = "";
+    private String annotationManagementPassword = "";
+    private long pdfOpenStartedAtMs;
     private String parentUriStr = null;
     private String rawModifiedTime = "";
 
@@ -547,7 +565,13 @@ public class PdfViewerActivity extends AppCompatActivity {
         setSearchInProgress(true);
         showSearchStatus("正在使用" + selectedSearchModeLabel + "搜索…", false);
 
-        pdfSearchManager.search(pdfUri, keyword, options, new PdfSearchCallback() {
+        if (pdfPassword != null && !pdfPassword.isEmpty() && searchWorkingPdfUri == null) {
+            prepareEncryptedSearchSource(keyword, mode);
+            return;
+        }
+
+        Uri searchUri = searchWorkingPdfUri == null ? pdfUri : searchWorkingPdfUri;
+        pdfSearchManager.search(searchUri, keyword, options, new PdfSearchCallback() {
             @Override
             public void onSearchStarted(String value) {
                 if (!isActiveSearchRequest(requestId)) return;
@@ -600,6 +624,61 @@ public class PdfViewerActivity extends AppCompatActivity {
                 showSearchStatus("搜索已取消。", false);
             }
         });
+    }
+
+    private void prepareEncryptedSearchSource(String keyword, PdfSearchMode mode) {
+        pendingEncryptedSearchKeyword = keyword;
+        pendingEncryptedSearchMode = mode;
+        if (encryptedSearchPreparationRunning) {
+            showSearchStatus("正在准备加密文档，请稍候…", false);
+            return;
+        }
+        encryptedSearchPreparationRunning = true;
+        setSearchInProgress(true);
+        showSearchStatus("首次搜索正在准备加密文档；完成后将复用缓存…", false);
+        final Uri expectedUri = pdfUri;
+        final String expectedPassword = pdfPassword;
+        new Thread(() -> {
+            File unlocked = null;
+            try {
+                unlocked = PdfSecurityContext.createDecryptedTemp(
+                        this,
+                        expectedUri,
+                        pdfPath,
+                        expectedPassword,
+                        "search-unlocked-"
+                );
+                File finalUnlocked = unlocked;
+                runOnUiThread(() -> {
+                    if (!expectedUri.equals(pdfUri) || isFinishing() || isDestroyed()) {
+                        if (finalUnlocked.exists()) finalUnlocked.delete();
+                        return;
+                    }
+                    if (unlockedPdfTempFile != null && unlockedPdfTempFile.exists()) {
+                        unlockedPdfTempFile.delete();
+                    }
+                    unlockedPdfTempFile = finalUnlocked;
+                    searchWorkingPdfUri = Uri.fromFile(finalUnlocked);
+                    encryptedSearchPreparationRunning = false;
+                    String nextKeyword = pendingEncryptedSearchKeyword;
+                    PdfSearchMode nextMode = pendingEncryptedSearchMode;
+                    pendingEncryptedSearchKeyword = null;
+                    pendingEncryptedSearchMode = null;
+                    setSearchInProgress(false);
+                    searchWithEngine(nextKeyword == null ? keyword : nextKeyword,
+                            nextMode == null ? mode : nextMode);
+                });
+            } catch (Throwable error) {
+                if (unlocked != null && unlocked.exists()) unlocked.delete();
+                runOnUiThread(() -> {
+                    encryptedSearchPreparationRunning = false;
+                    pendingEncryptedSearchKeyword = null;
+                    pendingEncryptedSearchMode = null;
+                    setSearchInProgress(false);
+                    showSearchStatus("无法准备加密文档搜索：" + safeMessage(error), true);
+                });
+            }
+        }, "encrypted-pdf-search-prepare").start();
     }
 
     private boolean isActiveSearchRequest(int requestId) {
@@ -759,11 +838,30 @@ public class PdfViewerActivity extends AppCompatActivity {
     }
 
     private void handlePdfLongPress(MotionEvent event) {
-        if (event == null || isEditMode || isSearchMode || pdfOverlay == null || pdfView == null || pdfUri == null) {
+        if (event == null || isEditMode || isSearchMode || pdfOverlay == null
+                || pdfView == null || pdfUri == null) {
+            return;
+        }
+        final float viewX = event.getX();
+        final float viewY = event.getY();
+        if (pdfSecurityInfo == null) {
+            Toast.makeText(this, "正在读取文档权限，请稍候…", Toast.LENGTH_SHORT).show();
+            ensureSecurityInfo(() -> handlePdfLongPressAt(viewX, viewY));
+            return;
+        }
+        handlePdfLongPressAt(viewX, viewY);
+    }
+
+    private void handlePdfLongPressAt(float viewX, float viewY) {
+        if (pdfSecurityInfo != null && !pdfSecurityInfo.canCopyOrExportText()) {
+            Toast.makeText(this, "文档权限禁止复制或提取文本", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (isEditMode || isSearchMode || pdfOverlay == null || pdfView == null || pdfUri == null) {
             return;
         }
 
-        PdfOverlayView.PageHit hit = pdfOverlay.locateViewPoint(event.getX(), event.getY());
+        PdfOverlayView.PageHit hit = pdfOverlay.locateViewPoint(viewX, viewY);
         if (hit == null) return;
 
         if (textSelectionRepository == null) resetTextSelectionRepository();
@@ -805,6 +903,56 @@ public class PdfViewerActivity extends AppCompatActivity {
         });
     }
 
+    private void ensureSecurityInfo(Runnable action) {
+        if (action != null) pendingSecurityActions.add(action);
+        if (pdfSecurityInfo != null) {
+            runPendingSecurityActions();
+            return;
+        }
+        PdfSecurityContext.Info cached = PdfSecurityContext.getCached(this, pdfUri, pdfPath, pdfPassword);
+        if (cached != null) {
+            pdfSecurityInfo = cached;
+            runPendingSecurityActions();
+            return;
+        }
+        if (securityInspectionRunning || pdfUri == null) return;
+        securityInspectionRunning = true;
+        final Uri expectedUri = pdfUri;
+        final String expectedPath = pdfPath;
+        final String expectedPassword = pdfPassword;
+        new Thread(() -> {
+            try {
+                PdfSecurityContext.Info info = PdfSecurityContext.inspect(
+                        this, expectedUri, expectedPath, expectedPassword);
+                runOnUiThread(() -> {
+                    securityInspectionRunning = false;
+                    if (!expectedUri.equals(pdfUri) || isFinishing() || isDestroyed()) {
+                        pendingSecurityActions.clear();
+                        return;
+                    }
+                    pdfSecurityInfo = info;
+                    runPendingSecurityActions();
+                });
+            } catch (Throwable error) {
+                runOnUiThread(() -> {
+                    securityInspectionRunning = false;
+                    pendingSecurityActions.clear();
+                    Toast.makeText(this, "无法读取文档权限：" + safeMessage(error),
+                            Toast.LENGTH_LONG).show();
+                });
+            }
+        }, "pdf-security-inspect-lazy").start();
+    }
+
+    private void runPendingSecurityActions() {
+        if (pendingSecurityActions.isEmpty()) return;
+        List<Runnable> actions = new ArrayList<>(pendingSecurityActions);
+        pendingSecurityActions.clear();
+        for (Runnable action : actions) {
+            if (action != null) action.run();
+        }
+    }
+
     private void resetTextSelectionRepository() {
         textSelectionRequestId++;
         clearTextSelectionUi();
@@ -813,7 +961,7 @@ public class PdfViewerActivity extends AppCompatActivity {
             textSelectionRepository = null;
         }
         if (pdfUri != null) {
-            textSelectionRepository = new PdfTextSelectionRepository(this, pdfUri, pdfPath);
+            textSelectionRepository = new PdfTextSelectionRepository(this, pdfUri, pdfPath, pdfPassword);
         }
     }
 
@@ -880,6 +1028,10 @@ public class PdfViewerActivity extends AppCompatActivity {
     }
 
     private void copySelectedPdfText() {
+        if (pdfSecurityInfo != null && !pdfSecurityInfo.canCopyOrExportText()) {
+            Toast.makeText(this, "文档权限禁止复制文本", Toast.LENGTH_LONG).show();
+            return;
+        }
         if (pdfOverlay == null) return;
         String selected = pdfOverlay.getSelectedText();
         if (selected == null || selected.isEmpty()) return;
@@ -1021,18 +1173,145 @@ public class PdfViewerActivity extends AppCompatActivity {
             }
 
             tvTopTitle.setText(currentFileName);
-            resetTextSelectionRepository();
 
             // 🌟 读取无侵入式的历史阅读进度
             int lastReadPage = progressPrefs.getInt(pdfUri.toString(), 0);
-            reloadPdfView(lastReadPage);
+            prepareSecurePdfAndLoad(lastReadPage, null, false);
         } else {
             finish();
         }
     }
 
+
+    private void prepareSecurePdfAndLoad(int targetPageIndex, String password, boolean fromRetry) {
+        final Uri expectedUri = pdfUri;
+        if (expectedUri == null) return;
+
+        // 阅读阶段不再使用 PDFBox 生成完整明文副本。Pdfium/AndroidPdfViewer
+        // 可以直接用密码打开原文件；安全权限信息改为在用户第一次执行复制、
+        // 批注等受限操作时按需读取。
+        deleteUnlockedPdfTemp();
+        workingPdfUri = expectedUri;
+        pdfPassword = password == null ? "" : password;
+        pdfSecurityInfo = PdfSecurityContext.getCached(this, expectedUri, pdfPath, pdfPassword);
+        securityInspectionRunning = false;
+        pendingSecurityActions.clear();
+        passwordDialogShowing = false;
+        directPasswordFallbackAttempted = false;
+        resetTextSelectionRepository();
+        reloadPdfView(targetPageIndex);
+    }
+
+    private void showPdfPasswordDialog(int targetPageIndex, boolean wrongPassword) {
+        if (passwordDialogShowing || isFinishing() || isDestroyed()) return;
+        passwordDialogShowing = true;
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        input.setHint("请输入 PDF 密码");
+        input.setPadding(dp(16), dp(12), dp(16), dp(12));
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(wrongPassword ? "密码不正确" : "PDF 已加密")
+                .setMessage(wrongPassword ? "请重新输入密码。" : "请输入打开密码或所有者密码后继续。")
+                .setView(input)
+                .setNegativeButton("取消", (d, which) -> {
+                    passwordDialogShowing = false;
+                    finish();
+                })
+                .setPositiveButton("打开", null)
+                .setOnCancelListener(d -> {
+                    passwordDialogShowing = false;
+                    finish();
+                })
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String password = input.getText().toString();
+                    if (password.isEmpty()) {
+                        input.setError("请输入密码");
+                        return;
+                    }
+                    passwordDialogShowing = false;
+                    dialog.dismiss();
+                    prepareSecurePdfAndLoad(targetPageIndex, password, true);
+                }));
+        dialog.show();
+    }
+
+    /**
+     * 少数由不同安全处理器生成的 PDF 能被 PDFBox 正确解密，但 Pdfium 会把
+     * 同一密码误报为错误。直接打开失败后只回退一次：验证密码并生成磁盘缓存
+     * 中的临时明文副本，再交给 Pdfium 渲染。正常文件仍保持零重写的快速路径。
+     */
+    private void tryPasswordCompatibilityFallback(int targetPageIndex, Throwable directError) {
+        if (directPasswordFallbackAttempted || pdfUri == null) {
+            showPdfPasswordDialog(targetPageIndex, true);
+            return;
+        }
+        directPasswordFallbackAttempted = true;
+        final Uri expectedUri = pdfUri;
+        final String expectedPath = pdfPath;
+        final String expectedPassword = pdfPassword;
+        Toast.makeText(this, "正在兼容读取加密 PDF…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            File unlocked = null;
+            try {
+                PdfSecurityContext.Info info = PdfSecurityContext.inspect(
+                        this, expectedUri, expectedPath, expectedPassword);
+                unlocked = PdfSecurityContext.createDecryptedTemp(
+                        this, expectedUri, expectedPath, expectedPassword, "viewer-fallback-");
+                File ready = unlocked;
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed() || !expectedUri.equals(pdfUri)) {
+                        ready.delete();
+                        return;
+                    }
+                    deleteUnlockedPdfTemp();
+                    unlockedPdfTempFile = ready;
+                    workingPdfUri = Uri.fromFile(ready);
+                    pdfSecurityInfo = info;
+                    resetTextSelectionRepository();
+                    reloadPdfView(targetPageIndex);
+                });
+            } catch (Throwable fallbackError) {
+                if (unlocked != null && unlocked.exists()) unlocked.delete();
+                runOnUiThread(() -> {
+                    if (PdfSecurityContext.isPasswordError(fallbackError)) {
+                        showPdfPasswordDialog(targetPageIndex, true);
+                    } else {
+                        new AlertDialog.Builder(this)
+                                .setTitle("PDF 加载失败")
+                                .setMessage(PdfSecurityContext.readableError(fallbackError))
+                                .setPositiveButton("知道了", null)
+                                .show();
+                    }
+                });
+            }
+        }, "pdf-password-compat-fallback").start();
+    }
+
+    private void deleteUnlockedPdfTemp() {
+        if (unlockedPdfTempFile != null && unlockedPdfTempFile.exists()) {
+            unlockedPdfTempFile.delete();
+        }
+        unlockedPdfTempFile = null;
+        searchWorkingPdfUri = null;
+        encryptedSearchPreparationRunning = false;
+        pendingEncryptedSearchKeyword = null;
+        pendingEncryptedSearchMode = null;
+    }
+
     private void reloadPdfView(int targetPageIndex) {
-        pdfView.fromUri(pdfUri)
+        Uri renderUri = workingPdfUri == null ? pdfUri : workingPdfUri;
+        pdfOpenStartedAtMs = System.currentTimeMillis();
+        boolean loadingOriginalEncryptedSource = renderUri != null && renderUri.equals(pdfUri);
+        String renderPassword = loadingOriginalEncryptedSource ? pdfPassword : "";
+        Log.d("PdfOpenPerf", "Pdfium load started, passwordSupplied="
+                + (renderPassword != null && !renderPassword.isEmpty())
+                + ", fallbackTemp=" + !loadingOriginalEncryptedSource);
+        pdfView.fromUri(renderUri)
+                .password(renderPassword == null || renderPassword.isEmpty() ? null : renderPassword)
                 .defaultPage(targetPageIndex)
                 .enableSwipe(true)
                 .swipeHorizontal(false)
@@ -1043,6 +1322,10 @@ public class PdfViewerActivity extends AppCompatActivity {
                 .autoSpacing(false)
                 .pageSnap(false)
                 .pageFling(false)
+                .onLoad(pageCount -> Log.d("PdfOpenPerf",
+                        "Pdfium load completed in "
+                                + (System.currentTimeMillis() - pdfOpenStartedAtMs)
+                                + "ms, pages=" + pageCount))
                 .onTap(e -> {
                     if (pdfOverlay != null && pdfOverlay.hasTextSelection()) {
                         clearTextSelectionUi();
@@ -1054,6 +1337,25 @@ public class PdfViewerActivity extends AppCompatActivity {
                     return true;
                 })
                 .onLongPress(this::handlePdfLongPress)
+                .onError(error -> {
+                    if (PdfSecurityContext.isPasswordError(error)) {
+                        if (pdfPassword != null
+                                && !pdfPassword.isEmpty()
+                                && !directPasswordFallbackAttempted
+                                && workingPdfUri != null
+                                && workingPdfUri.equals(pdfUri)) {
+                            tryPasswordCompatibilityFallback(targetPageIndex, error);
+                        } else {
+                            showPdfPasswordDialog(targetPageIndex, true);
+                        }
+                    } else {
+                        new AlertDialog.Builder(this)
+                                .setTitle("PDF 加载失败")
+                                .setMessage(PdfSecurityContext.readableError(error))
+                                .setPositiveButton("知道了", null)
+                                .show();
+                    }
+                })
                 .onPageChange((page, pageCount) -> {
                     if (!isEditMode && !isSearchMode) {
                         tvTopTitle.setText(currentFileName + " (" + (page + 1) + "/" + pageCount + ")");
@@ -1192,10 +1494,15 @@ public class PdfViewerActivity extends AppCompatActivity {
         btnNextVolume.setVisibility(View.GONE);
         Toast.makeText(this, "正在无缝加载: " + preloadedNextName, Toast.LENGTH_SHORT).show();
 
+        deleteUnlockedPdfTemp();
         pdfPath = preloadedNextPath;
         pdfName = preloadedNextName;
         pdfUri = preloadedNextUri;
-        resetTextSelectionRepository();
+        workingPdfUri = null;
+        pdfPassword = "";
+        pdfSecurityInfo = null;
+        securityInspectionRunning = false;
+        pendingSecurityActions.clear();
 
         currentFileName = pdfName;
         if (currentFileName.toLowerCase().endsWith(".pdf")) {
@@ -1217,10 +1524,19 @@ public class PdfViewerActivity extends AppCompatActivity {
 
 
         // 🌟 连卷时，不要读历史进度，强制从 0 (第1页) 开始看新的一卷！
-        reloadPdfView(0);
+        prepareSecurePdfAndLoad(0, null, false);
     }
 
     private void toggleEditMode(boolean enterEdit) {
+        if (enterEdit && pdfSecurityInfo == null) {
+            Toast.makeText(this, "正在读取文档权限，请稍候…", Toast.LENGTH_SHORT).show();
+            ensureSecurityInfo(() -> toggleEditMode(true));
+            return;
+        }
+        if (enterEdit && pdfSecurityInfo != null && !pdfSecurityInfo.canAnnotate()) {
+            Toast.makeText(this, "文档权限禁止添加或修改批注", Toast.LENGTH_LONG).show();
+            return;
+        }
         if (enterEdit && isSearchMode) {
             toggleSearchMode(false);
         }
@@ -1386,16 +1702,114 @@ public class PdfViewerActivity extends AppCompatActivity {
     }
 
     private void handleSaveAction() {
+        if (pdfOverlay == null || pdfOverlay.isActionStackEmpty()) {
+            Toast.makeText(this, "当前没有任何批注内容，无需保存", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (pdfSecurityInfo == null) {
+            Toast.makeText(this, "正在读取文档权限，请稍候…", Toast.LENGTH_SHORT).show();
+            ensureSecurityInfo(this::handleSaveAction);
+            return;
+        }
+        if (!pdfSecurityInfo.canAnnotate()) {
+            Toast.makeText(this, "文档权限禁止添加或修改批注", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (pdfSecurityInfo.encrypted && pdfSecurityInfo.hasRestrictions()) {
+            showAnnotationProtectionDialog(this::showSaveActionChoice);
+            return;
+        }
+        annotationOpenPassword = pdfPassword == null ? "" : pdfPassword;
+        annotationManagementPassword = "";
+        showSaveActionChoice();
+    }
+
+    private void showSaveActionChoice() {
         new AlertDialog.Builder(this)
                 .setTitle("保存批注")
                 .setItems(new String[]{"覆盖原文件 (直接保存)", "另存为新文件 (副本)"}, (dialog, which) -> {
-                    if (which == 0) {
-                        executeOverwriteSave();
-                    } else {
-                        executeSaveCopy();
-                    }
+                    if (which == 0) executeOverwriteSave();
+                    else executeSaveCopy();
                 })
                 .show();
+    }
+
+    private void showAnnotationProtectionDialog(Runnable onValidated) {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(20), dp(4), dp(20), 0);
+
+        TextView openLabel = new TextView(this);
+        openLabel.setText("当前打开密码（没有则留空）");
+        openLabel.setTextSize(14);
+        EditText openInput = new EditText(this);
+        openInput.setSingleLine(true);
+        openInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        openInput.setHint("用于保留副本的打开方式");
+        if (pdfSecurityInfo != null && !pdfSecurityInfo.ownerPermission) {
+            openInput.setText(pdfPassword == null ? "" : pdfPassword);
+        }
+
+        TextView ownerLabel = new TextView(this);
+        ownerLabel.setText("权限管理密码");
+        ownerLabel.setTextSize(14);
+        ownerLabel.setPadding(0, dp(14), 0, 0);
+        EditText ownerInput = new EditText(this);
+        ownerInput.setSingleLine(true);
+        ownerInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        ownerInput.setHint("用于验证并保留原有权限限制");
+        if (pdfSecurityInfo != null && pdfSecurityInfo.ownerPermission) {
+            ownerInput.setText(pdfPassword == null ? "" : pdfPassword);
+        }
+
+        content.addView(openLabel);
+        content.addView(openInput);
+        content.addView(ownerLabel);
+        content.addView(ownerInput);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("保留现有权限保护")
+                .setMessage("当前文档允许批注，但保存受保护 PDF 时需要权限管理密码。生成文件将继续保留原有权限设置。")
+                .setView(content)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("验证并继续", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String openPassword = openInput.getText().toString();
+                    String managementPassword = ownerInput.getText().toString();
+                    if (managementPassword.isEmpty()) {
+                        ownerInput.setError("请输入权限管理密码");
+                        return;
+                    }
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+                    new Thread(() -> {
+                        try {
+                            PdfSecurityContext.Info managementInfo = PdfSecurityContext.inspect(
+                                    this, pdfUri, pdfPath, managementPassword);
+                            if (!managementInfo.ownerPermission) {
+                                throw new IllegalStateException("权限管理密码不正确");
+                            }
+                            if (!openPassword.isEmpty()) {
+                                PdfSecurityContext.inspect(this, pdfUri, pdfPath, openPassword);
+                            }
+                            runOnUiThread(() -> {
+                                annotationOpenPassword = openPassword;
+                                annotationManagementPassword = managementPassword;
+                                dialog.dismiss();
+                                if (onValidated != null) onValidated.run();
+                            });
+                        } catch (Throwable error) {
+                            runOnUiThread(() -> {
+                                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                                ownerInput.setError(PdfSecurityContext.readableError(error));
+                            });
+                        }
+                    }, "annotation-security-validate").start();
+                }));
+        dialog.show();
     }
 
     private void executeOverwriteSave() {
@@ -1418,9 +1832,28 @@ public class PdfViewerActivity extends AppCompatActivity {
 
         new Thread(() -> {
             File tempFile = new File(getCacheDir(), "temp_overwrite_" + System.currentTimeMillis() + ".pdf");
-            try (InputStream source = openPdfInputStream();
-                 FileOutputStream tempOut = new FileOutputStream(tempFile)) {
-                PdfBoxAnnotationWriter.write(source, tempOut, actions, pageMetrics);
+            try {
+                try (BufferedOutputStream tempOut = new BufferedOutputStream(
+                             new FileOutputStream(tempFile), 1024 * 1024)) {
+                    PdfBoxAnnotationWriter.write(
+                            this,
+                            pdfUri,
+                            pdfPath,
+                            tempOut,
+                            actions,
+                            pageMetrics,
+                            annotationOpenPassword,
+                            annotationManagementPassword,
+                            pdfSecurityInfo
+                    );
+                    tempOut.flush();
+                }
+                PdfSecurityContext.validateProtectedFile(
+                        this,
+                        tempFile,
+                        pdfSecurityInfo != null && pdfSecurityInfo.encrypted
+                                ? annotationOpenPassword : ""
+                );
 
                 try (InputStream tempIn = new FileInputStream(tempFile);
                      OutputStream originalOut = openPdfOutputStream()) {
@@ -1436,12 +1869,17 @@ public class PdfViewerActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     progressDialog.dismiss();
                     if (dbHelper != null) dbHelper.updateLastModifiedTime(pdfUri.toString());
+                    PdfSecurityContext.clear(pdfUri);
+                    pdfSecurityInfo = null;
+                    deleteUnlockedPdfTemp();
+                    workingPdfUri = pdfUri;
+                    directPasswordFallbackAttempted = false;
                     Toast.makeText(this, "批注保存成功，已覆盖原文件", Toast.LENGTH_LONG).show();
                     toggleEditMode(false);
                     resetTextSelectionRepository();
                     reloadPdfView(currentPage);
                 });
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 e.printStackTrace();
                 runOnUiThread(() -> {
                     progressDialog.dismiss();
@@ -1477,9 +1915,28 @@ public class PdfViewerActivity extends AppCompatActivity {
             String targetCopyName = baseName + "-批注副本-" + timeStamp + ".pdf";
             File destFile = new File(getExternalFilesDir(null), targetCopyName);
 
-            try (InputStream source = openPdfInputStream();
-                 FileOutputStream target = new FileOutputStream(destFile)) {
-                PdfBoxAnnotationWriter.write(source, target, actions, pageMetrics);
+            try {
+                try (BufferedOutputStream target = new BufferedOutputStream(
+                             new FileOutputStream(destFile), 1024 * 1024)) {
+                    PdfBoxAnnotationWriter.write(
+                            this,
+                            pdfUri,
+                            pdfPath,
+                            target,
+                            actions,
+                            pageMetrics,
+                            annotationOpenPassword,
+                            annotationManagementPassword,
+                            pdfSecurityInfo
+                    );
+                    target.flush();
+                }
+                PdfSecurityContext.validateProtectedFile(
+                        this,
+                        destFile,
+                        pdfSecurityInfo != null && pdfSecurityInfo.encrypted
+                                ? annotationOpenPassword : ""
+                );
 
                 runOnUiThread(() -> {
                     progressDialog.dismiss();
@@ -1494,7 +1951,7 @@ public class PdfViewerActivity extends AppCompatActivity {
                     if (pdfOverlay != null) pdfOverlay.clearActions();
                     toggleEditMode(false);
                 });
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 e.printStackTrace();
                 if (destFile.exists()) destFile.delete();
                 runOnUiThread(() -> {
@@ -1592,6 +2049,10 @@ public class PdfViewerActivity extends AppCompatActivity {
         popup.show();
     }
 
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
     private static final class SearchMatch {
         final int pageIndex;
         final List<AndroidPdfViewerAdapter.ViewerSearchHighlight> rects;
@@ -1641,6 +2102,7 @@ public class PdfViewerActivity extends AppCompatActivity {
             pdfSearchManager.close();
             pdfSearchManager = null;
         }
+        deleteUnlockedPdfTemp();
         super.onDestroy();
     }
 

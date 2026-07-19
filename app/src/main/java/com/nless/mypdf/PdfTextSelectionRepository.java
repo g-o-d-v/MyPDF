@@ -39,6 +39,7 @@ public final class PdfTextSelectionRepository implements Closeable {
     private final Context appContext;
     private final Uri pdfUri;
     private final String fallbackPath;
+    private final String password;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Map<Integer, PdfTextPage> cache = new LinkedHashMap<Integer, PdfTextPage>(
             MAX_CACHED_PAGES,
@@ -55,9 +56,14 @@ public final class PdfTextSelectionRepository implements Closeable {
     private PDDocument document;
 
     public PdfTextSelectionRepository(Context context, Uri pdfUri, String fallbackPath) {
+        this(context, pdfUri, fallbackPath, "");
+    }
+
+    public PdfTextSelectionRepository(Context context, Uri pdfUri, String fallbackPath, String password) {
         this.appContext = context.getApplicationContext();
         this.pdfUri = pdfUri;
         this.fallbackPath = fallbackPath;
+        this.password = password == null ? "" : password;
     }
 
     public void requestPage(int pageIndex, Callback callback) {
@@ -93,7 +99,7 @@ public final class PdfTextSelectionRepository implements Closeable {
     private PDDocument ensureDocument() throws IOException {
         if (document != null) return document;
         try (InputStream input = openInputStream()) {
-            document = PDDocument.load(input);
+            document = password.isEmpty() ? PDDocument.load(input) : PDDocument.load(input, password);
             return document;
         }
     }
