@@ -9,7 +9,7 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
 
     <application
-        android:name=".MyPdfApplication"
+        android:name="com.nless.mypdf.app.MyPdfApplication"
         android:largeHeap="true"
         android:requestLegacyExternalStorage="true"
         android:allowBackup="true"
@@ -22,7 +22,7 @@
         android:theme="@style/Theme.MyPDF">
 
         <activity
-            android:name=".MainActivity"
+            android:name="com.nless.mypdf.ui.MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -31,35 +31,35 @@
         </activity>
 
         <activity
-            android:name=".PdfViewerActivity"
+            android:name="com.nless.mypdf.ui.PdfViewerActivity"
             android:theme="@style/Theme.MyPDF" />
 
         <activity
-            android:name=".SettingsActivity"
+            android:name="com.nless.mypdf.ui.SettingsActivity"
             android:theme="@style/Theme.MyPDF" />
 
         <activity
-            android:name=".ToolCategoryActivity"
+            android:name="com.nless.mypdf.ui.ToolCategoryActivity"
             android:theme="@style/Theme.MyPDF" />
 
         <activity
-            android:name=".CreatePdfActivity"
+            android:name="com.nless.mypdf.feature.create.CreatePdfActivity"
             android:theme="@style/Theme.MyPDF" />
 
         <activity
-            android:name=".ExportConvertActivity"
+            android:name="com.nless.mypdf.feature.export.ExportConvertActivity"
             android:theme="@style/Theme.MyPDF" />
 
         <activity
-            android:name=".ManagePdfPagesActivity"
+            android:name="com.nless.mypdf.feature.manage.ManagePdfPagesActivity"
             android:theme="@style/Theme.MyPDF" />
 
         <activity
-            android:name=".PdfProtectionActivity"
+            android:name="com.nless.mypdf.feature.protection.PdfProtectionActivity"
             android:theme="@style/Theme.MyPDF" />
 
         <service
-            android:name=".PdfMergeWorkerService"
+            android:name="com.nless.mypdf.feature.manage.PdfMergeWorkerService"
             android:exported="false"
             android:process=":pdf_merge"
             android:stopWithTask="true" />

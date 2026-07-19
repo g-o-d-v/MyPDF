@@ -560,7 +560,7 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
-        <com.nless.mypdf.PdfOverlayView
+        <com.nless.mypdf.ui.PdfOverlayView
             android:id="@+id/pdfOverlay"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
