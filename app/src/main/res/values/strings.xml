@@ -1,6 +1,61 @@
 <resources>
     <string name="app_name">MyPDF</string>
+    <string name="public_contact_email">3472966871@qq.com</string>
     <string name="navigation_drawer_open">打开导航抽屉</string>
     <string name="navigation_drawer_close">关闭导航抽屉</string>
     <string name="appbar_scrolling_view_behavior">com.google.android.material.appbar.AppBarLayout$ScrollingViewBehavior</string>
+
+    <string name="crash_consent_message"><![CDATA[开启后，MyPDF 会使用 Firebase Crashlytics 自动发送新的 Java、native 崩溃和 Android 11 及以上设备的部分 ANR 报告。
+
+可能包含：应用版本、Android 与设备技术信息、异常堆栈、native minidump，以及当前页面、操作类型、文件大小区间、页数区间、是否加密、OCR 档位等白名单状态。
+
+不会主动发送：PDF 文件、文件名、路径或 URI、正文、OCR 结果、搜索词、批注内容、密码、截图、邮箱、姓名或自定义用户 ID。
+
+开启前会先请求删除同意前暂存在设备上的未发送报告。]]></string>
+
+    <string name="privacy_policy_full"><![CDATA[最后更新：2026 年 7 月 20 日
+开发者：g-o-d-v
+
+【核心说明】
+• PDF 阅读、搜索、OCR、批注、创建、转换和安全处理均在设备本地执行。
+• 匿名崩溃报告默认关闭，只有用户明确同意后才发送新报告。
+• 应用内反馈只有在用户点击提交后才通过 FormSubmit 转发至开发者邮箱。
+
+【本地文档处理】
+MyPDF 不会为了核心功能上传 PDF、页面图像、正文、OCR 结果、搜索词、批注内容、密码、文件名、路径、URI 或 PDF 元数据。
+
+【匿名崩溃报告】
+开启后可能发送 Firebase 安装标识符、随机会话标识、崩溃时间、应用与设备技术信息、异常堆栈、native minidump 和诊断白名单中的粗粒度状态。
+
+【主动问题反馈】
+应用内反馈会发送问题类型、问题描述、复现步骤、选填联系邮箱，以及应用版本、构建类型、Android 版本、设备厂商与型号、ABI、系统语言和崩溃报告开关状态。内容通过 FormSubmit 转发至开发者邮箱；MyPDF 不使用 Firebase Authentication 或 Cloud Firestore 保存反馈。
+
+【明确不附带】
+PDF、文件名、路径、正文、OCR 结果、搜索词、批注、密码、截图、Android ID、广告 ID、IMEI、应用列表或 Logcat。
+
+【用途与保留】
+数据仅用于定位问题、修复崩溃、改进兼容性和评估功能建议，不用于广告、用户画像、营销或出售。根据 FormSubmit 公开说明，提交归档最多保留 30 天；开发者邮箱中的反馈按处理需要保留并可依请求删除。
+
+【联系方式】
+GitHub：https://github.com/g-o-d-v/MyPDF/issues
+邮箱：3472966871@qq.com]]></string>
+
+    <string name="diagnostic_allowlist_summary"><![CDATA[以下内容仅说明 MyPDF 主动添加到 Crashlytics 的应用自定义状态。用户主动填写并通过 FormSubmit 发送的反馈不属于此白名单，具体见隐私政策。
+
+【允许发送的中文说明】
+• 应用环境：主进程或 PDF 合并进程、Debug 或 Release、CPU 架构；
+• 当前状态：当前功能页面、正在执行的操作、操作阶段和成功/失败结果；
+• 文档粗粒度状态：来源类别、文件大小区间、页数区间、是否加密、是否存在权限限制；
+• OCR 状态：是否启用、搜索/OCR 模式、960/1280/1440 精度档位；
+• 编辑状态：批注类型和覆盖保存/另存副本方式，不包含批注内容；
+• 性能状态：操作耗时区间、系统可用内存区间、是否启用 largeHeap；
+• 退出与符号状态：上次退出原因类别、退出进程类别、native 符号状态和诊断结构版本。
+
+所有事件日志只能使用预先写入代码的固定名称，不能拼接用户输入或文档内容。
+
+【明确禁止】
+PDF 文件、文件名、路径、URI、PDF 元数据、正文、OCR 文本、搜索词、批注内容或手写轨迹、密码、截图、联系人、邮箱、手机号、姓名、Android ID、广告 ID、IMEI、序列号、精确位置、剪贴板中原有的内容、应用列表和 Logcat。
+
+【技术字段，供开发者与源码审查】
+app_process、build_type、app_abi、current_screen、current_operation、operation_stage、operation_result、document_source、file_size_bucket、page_count_bucket、encrypted、permission_restricted、ocr_enabled、ocr_mode、ocr_width、annotation_type、save_mode、operation_duration_bucket、available_memory_bucket、last_exit_reason、last_exit_process、large_heap_enabled、native_symbol_status、diagnostic_schema。]]></string>
 </resources>

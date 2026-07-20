@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
@@ -21,6 +23,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.MyPDF">
 
+        <meta-data
+            android:name="firebase_crashlytics_collection_enabled"
+            android:value="false" />
+
         <activity
             android:name="com.nless.mypdf.ui.MainActivity"
             android:exported="true">
@@ -37,6 +43,12 @@
         <activity
             android:name="com.nless.mypdf.ui.SettingsActivity"
             android:theme="@style/Theme.MyPDF" />
+
+        <activity
+            android:name="com.nless.mypdf.feature.feedback.FeedbackActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MyPDF"
+            android:windowSoftInputMode="adjustResize" />
 
         <activity
             android:name="com.nless.mypdf.ui.ToolCategoryActivity"

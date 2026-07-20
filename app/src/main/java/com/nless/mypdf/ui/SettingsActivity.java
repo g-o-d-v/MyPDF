@@ -3,8 +3,18 @@ package com.nless.mypdf.ui;
 
 import com.nless.mypdf.R;
 import com.nless.mypdf.core.SearchPreferences;
+import com.nless.mypdf.diagnostics.CrashReportingManager;
+import com.nless.mypdf.diagnostics.DiagnosticContext;
+import com.nless.mypdf.feature.feedback.FeedbackActivity;
+import com.nless.mypdf.feature.feedback.FeedbackLauncher;
+import com.nless.mypdf.feature.manage.PdfMergeWorkerService;
+import com.nless.mypdf.ui.dialog.PrivacyInfoDialogs;
+import android.content.Intent;
 import android.graphics.Color;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.Process;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -46,6 +56,7 @@ public class SettingsActivity extends AppCompatActivity {
     private TextView clearCacheValue;
     private View clearCacheRow;
     private volatile boolean clearingCache = false;
+    private boolean changingCrashSwitch = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -63,6 +74,8 @@ public class SettingsActivity extends AppCompatActivity {
         buildSearchMatchingSettings();
         buildOcrSettings();
         buildActionSettings();
+        buildFeedbackSettings();
+        buildPrivacySettings();
     }
 
     private void buildSearchMatchingSettings() {
@@ -144,7 +157,7 @@ public class SettingsActivity extends AppCompatActivity {
 
         View precisionRow = createValueSetting(
                 "OCR 识别精度",
-                SearchPreferences.getOcrPrecisionLabel(this),
+                SearchPreferences.getOcrPrecisionLabel(this) + "  ›",
                 this::showOcrPrecisionDialog
         );
         ocrPrecisionValue = precisionRow.findViewById(R.id.dynamic_setting_value);
@@ -271,6 +284,201 @@ public class SettingsActivity extends AppCompatActivity {
         return row;
     }
 
+
+    private View createDetailedSetting(
+            String title,
+            String summary,
+            String value,
+            Runnable action
+    ) {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), dp(12), dp(18), dp(12));
+        root.setMinimumHeight(dp(74));
+        root.setBackgroundColor(Color.WHITE);
+        root.setClickable(true);
+        root.setFocusable(true);
+
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView titleView = new TextView(this);
+        titleView.setText(title);
+        titleView.setTextColor(TEXT_PRIMARY);
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        titleView.setLayoutParams(new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
+        ));
+
+        TextView valueView = new TextView(this);
+        valueView.setId(R.id.dynamic_setting_value);
+        valueView.setText(value);
+        valueView.setTextColor(TEXT_SECONDARY);
+        valueView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        valueView.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        valueView.setPadding(dp(12), 0, 0, 0);
+
+        TextView summaryView = new TextView(this);
+        summaryView.setText(summary);
+        summaryView.setTextColor(TEXT_SECONDARY);
+        summaryView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        summaryView.setLineSpacing(0f, 1.16f);
+        summaryView.setPadding(0, dp(5), dp(28), 0);
+
+        titleRow.addView(titleView);
+        titleRow.addView(valueView);
+        root.addView(titleRow);
+        root.addView(summaryView);
+        root.setOnClickListener(v -> action.run());
+        return root;
+    }
+
+    private void buildFeedbackSettings() {
+        LinearLayout container = findViewById(R.id.feedback_container);
+
+        container.addView(createDetailedSetting(
+                "GitHub 问题反馈",
+                "推荐用于可以公开讨论、需要持续跟踪的问题或功能建议。将预填应用版本、Android 版本、设备型号和 ABI。",
+                "›",
+                () -> FeedbackLauncher.openGitHub(this)
+        ));
+        addDivider(container);
+
+        container.addView(createDetailedSetting(
+                "应用内反馈",
+                "填写问题后通过 FormSubmit 转发至开发者邮箱。将自动附带应用版本、Android 版本、设备型号和 ABI；联系邮箱选填。",
+                "›",
+                () -> startActivity(new Intent(this, FeedbackActivity.class))
+        ));
+    }
+
+
+    private void buildPrivacySettings() {
+        LinearLayout container = findViewById(R.id.privacy_diagnostics_container);
+        addCrashReportingSwitch(container);
+        addDivider(container);
+
+        container.addView(createValueSetting(
+                "隐私政策",
+                "›",
+                () -> PrivacyInfoDialogs.showPrivacyPolicy(this)
+        ));
+        addDivider(container);
+
+        container.addView(createValueSetting(
+                "诊断数据白名单",
+                "›",
+                () -> PrivacyInfoDialogs.showDiagnosticAllowlist(this)
+        ));
+        addDivider(container);
+
+        container.addView(createValueSetting(
+                "删除设备上的未发送报告",
+                "›",
+                () -> {
+                    if (CrashReportingManager.isEnabled(this)) {
+                        Toast.makeText(this, "请先关闭匿名崩溃报告并重新打开应用", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    new AlertDialog.Builder(this)
+                            .setTitle("删除未发送报告")
+                            .setMessage("将请求删除 Crashlytics 暂存在本设备且尚未发送的报告，不影响已经发送到 Firebase 的报告。")
+                            .setNegativeButton("取消", null)
+                            .setPositiveButton("删除", (dialog, which) -> {
+                                CrashReportingManager.deleteUnsentReports();
+                                Toast.makeText(this, "已请求删除未发送报告", Toast.LENGTH_SHORT).show();
+                            })
+                            .show();
+                }
+        ));
+    }
+
+    private void addCrashReportingSwitch(LinearLayout parent) {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), dp(12), dp(12), dp(12));
+        root.setBackgroundColor(Color.WHITE);
+
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView title = new TextView(this);
+        title.setText("匿名崩溃报告");
+        title.setTextColor(TEXT_PRIMARY);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        title.setLayoutParams(new LinearLayout.LayoutParams(0, dp(40), 1f));
+        title.setGravity(Gravity.CENTER_VERTICAL);
+
+        SwitchCompat toggle = new SwitchCompat(this);
+        toggle.setChecked(CrashReportingManager.isEnabled(this));
+        toggle.setThumbTintList(AppCompatResources.getColorStateList(this, R.color.switch_thumb_tint));
+        toggle.setTrackTintList(AppCompatResources.getColorStateList(this, R.color.switch_track_tint));
+        toggle.setContentDescription("匿名崩溃报告");
+
+        TextView description = new TextView(this);
+        description.setText("默认关闭。开启后，仅发送崩溃堆栈、应用与设备技术信息，以及白名单中的粗粒度操作状态；不会发送 PDF、文件名、路径、正文、OCR 结果、搜索词、批注内容或密码。关闭后应用会退出一次，以确保所有进程从下次启动起停止收集。");
+        description.setTextColor(TEXT_SECONDARY);
+        description.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        description.setLineSpacing(0f, 1.18f);
+        description.setPadding(0, dp(4), dp(24), dp(2));
+
+        titleRow.addView(title);
+        titleRow.addView(toggle);
+        root.addView(titleRow);
+        root.addView(description);
+
+        toggle.setOnCheckedChangeListener((button, checked) -> {
+            if (changingCrashSwitch) return;
+            changingCrashSwitch = true;
+            toggle.setChecked(!checked);
+            changingCrashSwitch = false;
+            if (checked) {
+                showCrashConsentDialog(toggle);
+            } else {
+                showCrashDisableDialog(toggle);
+            }
+        });
+        parent.addView(root);
+    }
+
+    private void showCrashConsentDialog(SwitchCompat toggle) {
+        new AlertDialog.Builder(this)
+                .setTitle("开启匿名崩溃报告")
+                .setMessage(getString(R.string.crash_consent_message))
+                .setNegativeButton("取消", null)
+                .setPositiveButton("同意并开启", (dialog, which) -> {
+                    CrashReportingManager.enableAfterConsent(this);
+                    changingCrashSwitch = true;
+                    toggle.setChecked(true);
+                    changingCrashSwitch = false;
+                    Toast.makeText(this, "匿名崩溃报告已开启", Toast.LENGTH_SHORT).show();
+                })
+                .show();
+    }
+
+    private void showCrashDisableDialog(SwitchCompat toggle) {
+        new AlertDialog.Builder(this)
+                .setTitle("关闭匿名崩溃报告")
+                .setMessage("关闭后应用将退出一次，确保主进程和 PDF 合并进程从下次启动起不再自动发送报告。重新打开 MyPDF 即可继续使用。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("关闭并退出", (dialog, which) -> {
+                    CrashReportingManager.disable(this);
+                    stopService(new Intent(this, PdfMergeWorkerService.class));
+                    changingCrashSwitch = true;
+                    toggle.setChecked(false);
+                    changingCrashSwitch = false;
+                    new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                        finishAffinity();
+                        Process.killProcess(Process.myPid());
+                    }, 250L);
+                })
+                .show();
+    }
+
     private void showOcrPrecisionDialog() {
         String[] labels = {
                 "快速（960）\n速度优先，适合大量页面；小字识别率可能下降。",
@@ -291,7 +499,7 @@ public class SettingsActivity extends AppCompatActivity {
                             ? SearchPreferences.OCR_WIDTH_HIGH
                             : SearchPreferences.OCR_WIDTH_BALANCED;
                     SearchPreferences.setOcrRenderWidth(this, width);
-                    ocrPrecisionValue.setText(SearchPreferences.getOcrPrecisionLabel(this));
+                    ocrPrecisionValue.setText(SearchPreferences.getOcrPrecisionLabel(this) + "  ›");
                     dialog.dismiss();
                 })
                 .setNegativeButton("取消", null)
@@ -311,6 +519,7 @@ public class SettingsActivity extends AppCompatActivity {
     private void clearSearchCache() {
         if (clearingCache) return;
         clearingCache = true;
+        DiagnosticContext.startOperation(this, "clear_search_cache");
         clearCacheRow.setEnabled(false);
         clearCacheRow.setAlpha(0.6f);
         clearCacheValue.setText("清理中…");
@@ -340,8 +549,10 @@ public class SettingsActivity extends AppCompatActivity {
                 clearCacheRow.setAlpha(1f);
                 clearCacheValue.setText("›");
                 if (finalFailure == null) {
+                    DiagnosticContext.finishOperation(this, "clear_search_cache", true);
                     Toast.makeText(this, "搜索缓存已清除", Toast.LENGTH_SHORT).show();
                 } else {
+                    DiagnosticContext.finishOperation(this, "clear_search_cache", false);
                     String message = finalFailure.getMessage();
                     if (message == null || message.trim().isEmpty()) message = "未知错误";
                     Toast.makeText(this, "清除失败：" + message, Toast.LENGTH_LONG).show();

@@ -5,6 +5,7 @@ import com.nless.mypdf.R;
 import com.nless.mypdf.core.PdfSecurityContext;
 import com.nless.mypdf.data.PdfDbHelper;
 import com.nless.mypdf.data.PdfItem;
+import com.nless.mypdf.diagnostics.DiagnosticContext;
 import com.nless.mypdf.ui.MainActivity;
 import com.nless.mypdf.ui.PdfViewerActivity;
 import android.content.Intent;
@@ -116,6 +117,7 @@ public class PdfProtectionActivity extends AppCompatActivity {
             uri -> {
                 if (uri == null) {
                     clearPreparedOutput();
+                    DiagnosticContext.cancelOperation(this, "pdf_protection");
                     return;
                 }
                 try {
@@ -397,6 +399,7 @@ public class PdfProtectionActivity extends AppCompatActivity {
     }
 
     private void prepareSelectedOperation() {
+        DiagnosticContext.startOperation(this, "pdf_protection");
         clearPreparedOutput();
         startProgress(toolbar.getTitle() == null ? "处理中" : toolbar.getTitle().toString());
         cancelled.set(false);
@@ -453,6 +456,8 @@ public class PdfProtectionActivity extends AppCompatActivity {
                     outputPicker.launch(suggestOutputName());
                 });
             } catch (Exception error) {
+                if (isCancelledError(error)) DiagnosticContext.cancelOperation(this, "pdf_protection");
+                else DiagnosticContext.finishOperation(this, "pdf_protection", false);
                 runOnUiThread(() -> {
                     dismissProgress();
                     refreshActionButton();
@@ -483,6 +488,9 @@ public class PdfProtectionActivity extends AppCompatActivity {
                 copyTempToUri(temp, outputUri);
                 String outputName = queryDisplayName(outputUri);
                 addCreatedPdfToHome(outputUri, outputName);
+                DiagnosticContext.setDocumentProfile(this, outputUri, "saf", sourcePageCount,
+                        MODE_PERMISSIONS.equals(mode) || sourceEncrypted, MODE_PERMISSIONS.equals(mode));
+                DiagnosticContext.finishOperation(this, "pdf_protection", true);
                 runOnUiThread(() -> {
                     dismissProgress();
                     refreshActionButton();
@@ -490,6 +498,8 @@ public class PdfProtectionActivity extends AppCompatActivity {
                 });
             } catch (Exception error) {
                 deleteOutput(outputUri);
+                if (isCancelledError(error)) DiagnosticContext.cancelOperation(this, "pdf_protection");
+                else DiagnosticContext.finishOperation(this, "pdf_protection", false);
                 runOnUiThread(() -> {
                     dismissProgress();
                     refreshActionButton();

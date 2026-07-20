@@ -4,6 +4,7 @@ package com.nless.mypdf.feature.create;
 import com.nless.mypdf.R;
 import com.nless.mypdf.data.PdfDbHelper;
 import com.nless.mypdf.data.PdfItem;
+import com.nless.mypdf.diagnostics.DiagnosticContext;
 import com.nless.mypdf.ui.MainActivity;
 import com.nless.mypdf.ui.PdfViewerActivity;
 import android.content.Intent;
@@ -532,6 +533,7 @@ public class CreatePdfActivity extends AppCompatActivity {
     }
 
     private void createPdf(Uri outputUri) {
+        DiagnosticContext.startOperation(this, "create_pdf");
         String outputName = queryDisplayName(outputUri);
         final String modeSnapshot = mode;
         final String textSnapshot = textInput == null ? "" : textInput.getText().toString();
@@ -568,11 +570,16 @@ public class CreatePdfActivity extends AppCompatActivity {
                 runOnUiThread(() -> updateProgress(1, 1, "正在写入保存位置"));
                 copyTempToUri(temp, outputUri);
                 addCreatedPdfToHome(outputUri, outputName);
+                int createdPages = MODE_IMAGES.equals(modeSnapshot) ? imageSnapshot.size()
+                        : MODE_BLANK.equals(modeSnapshot) && blankOptions != null ? blankOptions.pageCount : -1;
+                DiagnosticContext.setDocumentProfile(this, outputUri, "saf", createdPages, false, false);
+                DiagnosticContext.finishOperation(this, "create_pdf", true);
                 runOnUiThread(() -> {
                     dismissProgressDialog();
                     showSuccessDialog(outputUri, outputName);
                 });
             } catch (Exception e) {
+                DiagnosticContext.finishOperation(this, "create_pdf", false);
                 runOnUiThread(() -> {
                     dismissProgressDialog();
                     new AlertDialog.Builder(this)

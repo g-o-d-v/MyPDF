@@ -6,6 +6,7 @@ import com.nless.mypdf.core.PdfSecurityContext;
 import com.nless.mypdf.core.SearchPreferences;
 import com.nless.mypdf.data.PdfDbHelper;
 import com.nless.mypdf.data.PdfItem;
+import com.nless.mypdf.diagnostics.DiagnosticContext;
 import com.nless.mypdf.ui.MainActivity;
 import com.nless.mypdf.ui.PdfViewerActivity;
 import android.content.Intent;
@@ -527,6 +528,7 @@ public class ExportConvertActivity extends AppCompatActivity {
     private void exportImages(Uri directoryUri) {
         PdfExportService.PageRange range = readPageRange();
         if (range == null) return;
+        DiagnosticContext.startOperation(this, "export_images");
         DocumentFile directory = DocumentFile.fromTreeUri(this, directoryUri);
         PdfExportService.ImageOptions options = new PdfExportService.ImageOptions();
         options.format = imageFormatIndex == 1
@@ -548,6 +550,7 @@ public class ExportConvertActivity extends AppCompatActivity {
                         cancelled,
                         this::postProgress
                 );
+                DiagnosticContext.finishOperation(this, "export_images", true);
                 runOnUiThread(() -> {
                     dismissProgress();
                     new AlertDialog.Builder(this)
@@ -557,6 +560,8 @@ public class ExportConvertActivity extends AppCompatActivity {
                             .show();
                 });
             } catch (Exception error) {
+                if (isCancelledError(error)) DiagnosticContext.cancelOperation(this, "export_images");
+                else DiagnosticContext.finishOperation(this, "export_images", false);
                 runOnUiThread(() -> {
                     dismissProgress();
                     if (!isCancelledError(error)) showError("导出失败", error);
@@ -569,6 +574,7 @@ public class ExportConvertActivity extends AppCompatActivity {
     private void exportText(Uri outputUri) {
         PdfExportService.PageRange range = readPageRange();
         if (range == null) return;
+        DiagnosticContext.startOperation(this, "export_text");
         PdfExportService.TextOptions options = new PdfExportService.TextOptions();
         options.mode = new PdfExportService.TextMode[]{
                 PdfExportService.TextMode.AUTO,
@@ -595,6 +601,11 @@ public class ExportConvertActivity extends AppCompatActivity {
                 postProgress(1, 1, "正在写入保存位置");
                 copyTempToUri(temp, outputUri);
                 PdfExportService.ResultSummary finalSummary = summary;
+                DiagnosticContext.setSearchProfile(this, options.mode != PdfExportService.TextMode.TEXT_ONLY,
+                        options.mode == PdfExportService.TextMode.OCR_ONLY ? "ocr_only"
+                                : options.mode == PdfExportService.TextMode.TEXT_ONLY ? "text_only" : "smart",
+                        options.ocrRenderWidth);
+                DiagnosticContext.finishOperation(this, "export_text", true);
                 runOnUiThread(() -> {
                     dismissProgress();
                     String message = "文本文件已保存。";
@@ -613,6 +624,8 @@ public class ExportConvertActivity extends AppCompatActivity {
                 });
             } catch (Exception error) {
                 deleteOutput(outputUri);
+                if (isCancelledError(error)) DiagnosticContext.cancelOperation(this, "export_text");
+                else DiagnosticContext.finishOperation(this, "export_text", false);
                 runOnUiThread(() -> {
                     dismissProgress();
                     if (!isCancelledError(error)) showError("导出失败", error);
@@ -707,6 +720,7 @@ public class ExportConvertActivity extends AppCompatActivity {
     private void createSearchablePdf(Uri outputUri) {
         PdfExportService.PageRange range = readPageRange();
         if (range == null) return;
+        DiagnosticContext.startOperation(this, "create_searchable_pdf");
         PdfExportService.SearchableOptions options = new PdfExportService.SearchableOptions();
         options.scope = searchableScopeIndex == 1
                 ? PdfExportService.SearchableScope.ALL_SELECTED
@@ -748,6 +762,11 @@ public class ExportConvertActivity extends AppCompatActivity {
                 String outputName = queryDisplayName(outputUri);
                 addCreatedPdfToHome(outputUri, outputName);
                 PdfExportService.ResultSummary finalSummary = summary;
+                DiagnosticContext.setDocumentProfile(this, outputUri, "saf", sourcePageCount,
+                        sourceSecurityInfo != null && sourceSecurityInfo.encrypted,
+                        sourceSecurityInfo != null && sourceSecurityInfo.hasRestrictions());
+                DiagnosticContext.setSearchProfile(this, true, "ocr_only", options.ocrRenderWidth);
+                DiagnosticContext.finishOperation(this, "create_searchable_pdf", true);
                 runOnUiThread(() -> {
                     dismissProgress();
                     StringBuilder message = new StringBuilder();
@@ -773,6 +792,8 @@ public class ExportConvertActivity extends AppCompatActivity {
                 });
             } catch (Exception error) {
                 deleteOutput(outputUri);
+                if (isCancelledError(error)) DiagnosticContext.cancelOperation(this, "create_searchable_pdf");
+                else DiagnosticContext.finishOperation(this, "create_searchable_pdf", false);
                 runOnUiThread(() -> {
                     dismissProgress();
                     if (!isCancelledError(error)) showError("生成失败", error);

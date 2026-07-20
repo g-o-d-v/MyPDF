@@ -9,6 +9,7 @@ import com.nless.mypdf.core.SearchPreferences;
 import com.nless.mypdf.core.SmartVolumeSniffer;
 import com.nless.mypdf.data.PdfDbHelper;
 import com.nless.mypdf.data.PdfItem;
+import com.nless.mypdf.diagnostics.DiagnosticContext;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -571,6 +572,11 @@ public class PdfViewerActivity extends AppCompatActivity {
         clearPdfSearch(false);
         final int requestId = ++searchRequestId;
         final PdfSearchOptions options = createSearchOptions(mode);
+        DiagnosticContext.startOperation(this, "pdf_search");
+        String diagnosticMode = mode == PdfSearchMode.TEXT_ONLY ? "text_only"
+                : mode == PdfSearchMode.OCR_ONLY ? "ocr_only" : "smart";
+        DiagnosticContext.setSearchProfile(this, mode != PdfSearchMode.TEXT_ONLY,
+                diagnosticMode, options.ocrRenderWidth);
         setSearchInProgress(true);
         showSearchStatus("正在使用" + selectedSearchModeLabel + "搜索…", false);
 
@@ -615,6 +621,7 @@ public class PdfViewerActivity extends AppCompatActivity {
             public void onSearchCompleted(List<PdfSearchResult> results) {
                 if (!isActiveSearchRequest(requestId)) return;
                 setSearchInProgress(false);
+                DiagnosticContext.finishOperation(PdfViewerActivity.this, "pdf_search", true);
                 showSearchResults(keyword, results);
             }
 
@@ -622,6 +629,7 @@ public class PdfViewerActivity extends AppCompatActivity {
             public void onSearchFailed(Throwable error) {
                 if (!isActiveSearchRequest(requestId)) return;
                 setSearchInProgress(false);
+                DiagnosticContext.finishOperation(PdfViewerActivity.this, "pdf_search", false);
                 clearPdfSearch(false);
                 showSearchStatus("搜索失败：" + safeMessage(error), true);
             }
@@ -630,6 +638,7 @@ public class PdfViewerActivity extends AppCompatActivity {
             public void onSearchCancelled() {
                 if (!isActiveSearchRequest(requestId)) return;
                 setSearchInProgress(false);
+                DiagnosticContext.cancelOperation(PdfViewerActivity.this, "pdf_search");
                 showSearchStatus("搜索已取消。", false);
             }
         });
@@ -684,6 +693,7 @@ public class PdfViewerActivity extends AppCompatActivity {
                     pendingEncryptedSearchKeyword = null;
                     pendingEncryptedSearchMode = null;
                     setSearchInProgress(false);
+                    DiagnosticContext.finishOperation(PdfViewerActivity.this, "pdf_search", false);
                     showSearchStatus("无法准备加密文档搜索：" + safeMessage(error), true);
                 });
             }
@@ -701,6 +711,7 @@ public class PdfViewerActivity extends AppCompatActivity {
         if (!searchInProgress) return;
         searchRequestId++;
         if (pdfSearchManager != null) pdfSearchManager.cancel();
+        DiagnosticContext.cancelOperation(this, "pdf_search");
         setSearchInProgress(false);
         showSearchStatus("搜索已取消。", false);
     }
@@ -1312,6 +1323,7 @@ public class PdfViewerActivity extends AppCompatActivity {
     }
 
     private void reloadPdfView(int targetPageIndex) {
+        DiagnosticContext.startOperation(this, "pdf_open");
         Uri renderUri = workingPdfUri == null ? pdfUri : workingPdfUri;
         pdfOpenStartedAtMs = System.currentTimeMillis();
         boolean loadingOriginalEncryptedSource = renderUri != null && renderUri.equals(pdfUri);
@@ -1347,6 +1359,7 @@ public class PdfViewerActivity extends AppCompatActivity {
                 })
                 .onLongPress(this::handlePdfLongPress)
                 .onError(error -> {
+                    DiagnosticContext.finishOperation(this, "pdf_open", false);
                     if (PdfSecurityContext.isPasswordError(error)) {
                         if (pdfPassword != null
                                 && !pdfPassword.isEmpty()
@@ -1414,6 +1427,14 @@ public class PdfViewerActivity extends AppCompatActivity {
                 })
                 // =========================================================================
                 .onLoad(nbPages -> {
+                    boolean encrypted = (pdfSecurityInfo != null && pdfSecurityInfo.encrypted)
+                            || (pdfPassword != null && !pdfPassword.isEmpty());
+                    boolean restricted = pdfSecurityInfo != null && pdfSecurityInfo.hasRestrictions();
+                    String source = pdfUri != null && "content".equals(pdfUri.getScheme())
+                            ? "saf" : "unknown";
+                    DiagnosticContext.setDocumentProfile(this, pdfUri, source, nbPages,
+                            encrypted, restricted);
+                    DiagnosticContext.finishOperation(this, "pdf_open", true);
                     if (androidPdfViewerAdapter != null) {
                         androidPdfViewerAdapter.invalidatePageSizeCache();
                     }
@@ -1828,6 +1849,9 @@ public class PdfViewerActivity extends AppCompatActivity {
             return;
         }
 
+        DiagnosticContext.startOperation(this, "annotation_save");
+        DiagnosticContext.setAnnotationProfile(this,
+                currentEditState == EditState.DOODLE ? "ink" : "none", "overwrite");
         AlertDialog progressDialog = new AlertDialog.Builder(this)
                 .setTitle("正在写入批注")
                 .setMessage("请稍候，正在使用 PdfBox-Android 写入矢量图形和文本...")
@@ -1875,6 +1899,7 @@ public class PdfViewerActivity extends AppCompatActivity {
                     MediaScannerConnection.scanFile(this, new String[]{pdfPath}, new String[]{"application/pdf"}, null);
                 }
 
+                DiagnosticContext.finishOperation(this, "annotation_save", true);
                 runOnUiThread(() -> {
                     progressDialog.dismiss();
                     if (dbHelper != null) dbHelper.updateLastModifiedTime(pdfUri.toString());
@@ -1890,6 +1915,7 @@ public class PdfViewerActivity extends AppCompatActivity {
                 });
             } catch (Throwable e) {
                 e.printStackTrace();
+                DiagnosticContext.finishOperation(this, "annotation_save", false);
                 runOnUiThread(() -> {
                     progressDialog.dismiss();
                     Toast.makeText(this, "覆盖失败：" + safeMessage(e) +
@@ -1908,6 +1934,9 @@ public class PdfViewerActivity extends AppCompatActivity {
             return;
         }
 
+        DiagnosticContext.startOperation(this, "annotation_save");
+        DiagnosticContext.setAnnotationProfile(this,
+                currentEditState == EditState.DOODLE ? "ink" : "none", "save_as");
         AlertDialog progressDialog = new AlertDialog.Builder(this)
                 .setTitle("正在另存批注副本")
                 .setMessage("请稍候，正在使用 PdfBox-Android 写入批注...")
@@ -1947,6 +1976,11 @@ public class PdfViewerActivity extends AppCompatActivity {
                                 ? annotationOpenPassword : ""
                 );
 
+                DiagnosticContext.setDocumentProfile(this, Uri.fromFile(destFile), "app_copy",
+                        pdfView == null ? -1 : pdfView.getPageCount(),
+                        pdfSecurityInfo != null && pdfSecurityInfo.encrypted,
+                        pdfSecurityInfo != null && pdfSecurityInfo.hasRestrictions());
+                DiagnosticContext.finishOperation(this, "annotation_save", true);
                 runOnUiThread(() -> {
                     progressDialog.dismiss();
                     if (dbHelper != null) {
@@ -1962,6 +1996,7 @@ public class PdfViewerActivity extends AppCompatActivity {
                 });
             } catch (Throwable e) {
                 e.printStackTrace();
+                DiagnosticContext.finishOperation(this, "annotation_save", false);
                 if (destFile.exists()) destFile.delete();
                 runOnUiThread(() -> {
                     progressDialog.dismiss();

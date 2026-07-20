@@ -21,7 +21,22 @@ dependencyResolutionManagement {
     // 强制所有模块使用这里的仓库配置
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        // 优先使用阿里云镜像下载第三方代码库依赖
+        // Firebase 必须从官方 Google Maven 获取。
+        // 部分镜像会先同步 BoM/POM，却暂时缺少对应 AAR；Gradle 一旦从该镜像
+        // 选定模块元数据，就不会再去后面的仓库补找缺失的 AAR。
+        exclusiveContent {
+            forRepository {
+                maven {
+                    name = 'GoogleFirebaseOfficial'
+                    url = uri('https://dl.google.com/dl/android/maven2/')
+                }
+            }
+            filter {
+                includeGroup('com.google.firebase')
+            }
+        }
+
+        // 其他 Android/Google 与第三方依赖仍优先使用阿里云镜像。
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/public' }
 

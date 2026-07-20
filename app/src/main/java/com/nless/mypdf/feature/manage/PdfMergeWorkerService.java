@@ -1,6 +1,7 @@
 package com.nless.mypdf.feature.manage;
 
 import android.app.Service;
+import com.nless.mypdf.diagnostics.DiagnosticContext;
 import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
@@ -137,6 +138,7 @@ public final class PdfMergeWorkerService extends Service {
             ResultReceiver receiver
     ) {
         File temp = null;
+        DiagnosticContext.startOperation(this, "pdf_merge");
         try {
             ArrayList<Uri> sourceUris = new ArrayList<>(sourceStrings.size());
             for (String value : sourceStrings) sourceUris.add(Uri.parse(value));
@@ -170,12 +172,16 @@ public final class PdfMergeWorkerService extends Service {
             result.putInt(EXTRA_OUTPUT_PAGES, summary.outputPages);
             result.putString(EXTRA_OUTPUT_URI, outputUri.toString());
             result.putString(EXTRA_OUTPUT_NAME, outputName);
+            DiagnosticContext.setDocumentProfile(this, outputUri, "saf", summary.outputPages, false, false);
+            DiagnosticContext.finishOperation(this, "pdf_merge", true);
             receiver.send(RESULT_SUCCESS, result);
         } catch (Exception error) {
             deleteOutput(outputUri);
             if (cancelled.get() || safeMessage(error).contains("取消")) {
+                DiagnosticContext.cancelOperation(this, "pdf_merge");
                 receiver.send(RESULT_CANCELLED, baseBundle(taskId));
             } else {
+                DiagnosticContext.finishOperation(this, "pdf_merge", false);
                 sendError(receiver, taskId, safeMessage(error));
             }
         } finally {

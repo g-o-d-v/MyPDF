@@ -77,6 +77,50 @@
                 android:background="#FFFFFF"
                 android:orientation="vertical" />
 
+
+
+            <TextView
+                android:id="@+id/feedback_header"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#F4F5F7"
+                android:paddingStart="18dp"
+                android:paddingTop="22dp"
+                android:paddingEnd="18dp"
+                android:paddingBottom="8dp"
+                android:text="帮助与反馈"
+                android:textColor="#72777D"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:id="@+id/feedback_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#FFFFFF"
+                android:orientation="vertical" />
+
+            <TextView
+                android:id="@+id/privacy_diagnostics_header"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#F4F5F7"
+                android:paddingStart="18dp"
+                android:paddingTop="22dp"
+                android:paddingEnd="18dp"
+                android:paddingBottom="8dp"
+                android:text="隐私与诊断"
+                android:textColor="#72777D"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:id="@+id/privacy_diagnostics_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#FFFFFF"
+                android:orientation="vertical" />
+
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -84,7 +128,7 @@
                 android:paddingTop="12dp"
                 android:paddingEnd="18dp"
                 android:paddingBottom="12dp"
-                android:text="点击设置名称可以展开或收起说明；点击右侧开关修改设置。设置会在下一次 PDF 搜索时生效。"
+                android:text="点击搜索设置名称可以展开或收起说明；搜索设置会在下一次 PDF 搜索时生效。GitHub 反馈只会在您确认发布后发送；应用内反馈只会在您点击提交后写入 Firebase。"
                 android:textColor="#7A7F85"
                 android:textSize="12sp" />
 

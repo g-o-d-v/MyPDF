@@ -5,6 +5,7 @@ import com.nless.mypdf.R;
 import com.nless.mypdf.core.PdfSecurityContext;
 import com.nless.mypdf.data.PdfDbHelper;
 import com.nless.mypdf.data.PdfItem;
+import com.nless.mypdf.diagnostics.DiagnosticContext;
 import com.nless.mypdf.ui.MainActivity;
 import com.nless.mypdf.ui.PdfViewerActivity;
 import android.content.Intent;
@@ -820,6 +821,7 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
             runMergeInSeparateProcess(outputUri);
             return;
         }
+        DiagnosticContext.startOperation(this, "manage_pages");
         startProgress(operationProgressTitle());
         workerExecutor.execute(() -> {
             File temp = null;
@@ -852,12 +854,18 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
                 String outputName = queryDisplayName(outputUri);
                 addCreatedPdfToHome(outputUri, outputName);
                 PdfPageManagementService.ResultSummary finalSummary = summary;
+                DiagnosticContext.setDocumentProfile(this, outputUri, "saf", summary.outputPages,
+                        sourceSecurityInfo != null && sourceSecurityInfo.encrypted,
+                        sourceSecurityInfo != null && sourceSecurityInfo.hasRestrictions());
+                DiagnosticContext.finishOperation(this, "manage_pages", true);
                 runOnUiThread(() -> {
                     dismissProgress();
                     showSuccess(outputUri, outputName, finalSummary);
                 });
             } catch (Exception error) {
                 deleteOutput(outputUri);
+                if (isCancelledError(error)) DiagnosticContext.cancelOperation(this, "manage_pages");
+                else DiagnosticContext.finishOperation(this, "manage_pages", false);
                 runOnUiThread(() -> {
                     dismissProgress();
                     if (isCancelledError(error)) {
@@ -873,6 +881,7 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
     }
 
     private void runMergeInSeparateProcess(Uri outputUri) {
+        DiagnosticContext.startOperation(this, "pdf_merge");
         startProgress(operationProgressTitle());
         activeMergeTaskId = UUID.randomUUID().toString();
         activeMergeOutputUri = outputUri;
@@ -892,6 +901,7 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
             activeMergeOutputUri = null;
             dismissProgress();
             deleteOutput(outputUri);
+            DiagnosticContext.finishOperation(this, "pdf_merge", false);
             showError("无法启动合并任务", error);
         }
     }
@@ -939,10 +949,14 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
                             summary.sourcePages
                     );
                     if (outputUri != null) {
+                        DiagnosticContext.setDocumentProfile(ManagePdfPagesActivity.this, outputUri, "saf",
+                                summary.outputPages, false, false);
+                        DiagnosticContext.finishOperation(ManagePdfPagesActivity.this, "pdf_merge", true);
                         addCreatedPdfToHome(outputUri, outputName);
                         showSuccess(outputUri, outputName, summary);
                     }
                 } else if (resultCode == PdfMergeWorkerService.RESULT_CANCELLED) {
+                    DiagnosticContext.cancelOperation(ManagePdfPagesActivity.this, "pdf_merge");
                     Toast.makeText(
                             ManagePdfPagesActivity.this,
                             "合并已取消",
@@ -955,6 +969,7 @@ public class ManagePdfPagesActivity extends AppCompatActivity {
                                     PdfMergeWorkerService.EXTRA_MESSAGE,
                                     "独立合并进程异常结束"
                             );
+                    DiagnosticContext.finishOperation(ManagePdfPagesActivity.this, "pdf_merge", false);
                     showErrorMessage("处理失败", message);
                 }
             }
