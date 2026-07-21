@@ -33,6 +33,26 @@
                 android:paddingTop="18dp"
                 android:paddingEnd="18dp"
                 android:paddingBottom="8dp"
+                android:text="阅读体验"
+                android:textColor="#72777D"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:id="@+id/reading_experience_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#FFFFFF"
+                android:orientation="vertical" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#F4F5F7"
+                android:paddingStart="18dp"
+                android:paddingTop="22dp"
+                android:paddingEnd="18dp"
+                android:paddingBottom="8dp"
                 android:text="搜索匹配"
                 android:textColor="#72777D"
                 android:textSize="14sp"
