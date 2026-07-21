@@ -2,6 +2,7 @@ package com.nless.mypdf.ui;
 
 
 import com.nless.mypdf.R;
+import com.nless.mypdf.core.ReadingPreferences;
 import com.nless.mypdf.core.SearchPreferences;
 import com.nless.mypdf.diagnostics.CrashReportingManager;
 import com.nless.mypdf.diagnostics.DiagnosticContext;
@@ -50,6 +51,7 @@ public class SettingsActivity extends AppCompatActivity {
 
     private final ExecutorService cacheExecutor = Executors.newSingleThreadExecutor();
 
+    private LinearLayout readingExperienceContainer;
     private LinearLayout searchMatchingContainer;
     private LinearLayout ocrSettingsContainer;
     private TextView ocrPrecisionValue;
@@ -68,14 +70,28 @@ public class SettingsActivity extends AppCompatActivity {
         toolbar.setNavigationIcon(android.R.drawable.ic_menu_revert);
         toolbar.setNavigationOnClickListener(v -> finish());
 
+        readingExperienceContainer = findViewById(R.id.reading_experience_container);
         searchMatchingContainer = findViewById(R.id.search_matching_container);
         ocrSettingsContainer = findViewById(R.id.ocr_settings_container);
 
+        buildReadingExperienceSettings();
         buildSearchMatchingSettings();
         buildOcrSettings();
         buildActionSettings();
         buildFeedbackSettings();
         buildPrivacySettings();
+    }
+
+
+    private void buildReadingExperienceSettings() {
+        addSwitchSetting(
+                readingExperienceContainer,
+                "实验性阅读控制栏",
+                "实验性选项，默认关闭。开启后，PDF 页面底部会显示翻页模式、翻页动画和观看进度，并可切换横向单页阅读。部分漫画或特殊比例 PDF 在横向模式下可能出现较多留白，观看体验可能不如纵向模式；关闭后使用原有纵向阅读界面。",
+                ReadingPreferences.isExperimentalReadingControlsEnabled(this),
+                enabled -> ReadingPreferences.setExperimentalReadingControlsEnabled(
+                        this, enabled)
+        );
     }
 
     private void buildSearchMatchingSettings() {

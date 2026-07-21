@@ -6,6 +6,7 @@ import com.nless.mypdf.core.PdfSecurityContext;
 import com.nless.mypdf.core.PdfTextPage;
 import com.nless.mypdf.core.PdfTextSelectionRepository;
 import com.nless.mypdf.core.SearchPreferences;
+import com.nless.mypdf.core.ReadingPreferences;
 import com.nless.mypdf.core.SmartVolumeSniffer;
 import com.nless.mypdf.data.PdfDbHelper;
 import com.nless.mypdf.data.PdfItem;
@@ -21,6 +22,8 @@ import android.graphics.drawable.GradientDrawable;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.ActionMode;
 import android.view.Menu;
@@ -30,6 +33,7 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.view.View;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
@@ -42,6 +46,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.documentfile.provider.DocumentFile;
 
 import com.github.barteksc.pdfviewer.PDFView;
+import com.shockwave.pdfium.util.SizeF;
 import com.nless.pdf_search_engine.androidpdfviewer.AndroidPdfViewerAdapter;
 import com.nless.pdf_search_engine.core.PdfSearchCallback;
 import com.nless.pdf_search_engine.core.PdfSearchManager;
@@ -81,6 +86,7 @@ public class PdfViewerActivity extends AppCompatActivity {
     private boolean isMenuVisible = true;
 
     private boolean isAtLastPage = false;
+    private boolean nextVolumeButtonTargetVisible = false;
 
     private String currentFileName = "未命名";
     private String pdfPath = "";
@@ -116,7 +122,15 @@ public class PdfViewerActivity extends AppCompatActivity {
     private LinearLayout topMenuLayout;
     private LinearLayout annotationPanelContainer;
     private LinearLayout searchPanelContainer;
-    private View pdfContentFrame;
+    private FrameLayout pdfContentFrame;
+
+    private LinearLayout readingControlBar;
+    private TextView btnReadVertical;
+    private TextView btnReadHorizontal;
+    private TextView btnPageAnimationNone;
+    private TextView btnPageAnimationEnabled;
+    private TextView tvReadingProgress;
+    private SeekBar seekReadingProgress;
 
     private TextView btnNextVolume;
 
@@ -152,8 +166,29 @@ public class PdfViewerActivity extends AppCompatActivity {
     private float lastPdfYOffset = 0;
     private float lastPdfZoom = 0;
 
-    // 🌟 新增：用来存储阅读进度的本地轻量级文件（不碰数据库）
+    // 阅读进度和每个文件的阅读方向都保存在本地轻量级配置中。
     private SharedPreferences progressPrefs;
+
+    private static final int COMIC_PROGRESS_MAX = 1000;
+    private static final float LONG_COMIC_PAGE_RATIO = 3.2f;
+    private static final float SINGLE_PAGE_LONG_COMIC_RATIO = 3.0f;
+    private static final String TYPE_LONG_COMIC = "long_comic";
+    private static final String TYPE_NORMAL = "normal";
+
+    private final Handler readingProgressHandler = new Handler(Looper.getMainLooper());
+    private Runnable pendingReadingProgressSave;
+    private boolean horizontalReadingMode;
+    private boolean savedHorizontalReadingMode;
+    private boolean longComicMode;
+    private boolean documentTypeKnown;
+    private boolean readingProgressTracking;
+    private boolean readingControlsReady;
+    private boolean readingControlsFeatureEnabled;
+    private boolean readingControlsShown;
+    private int loadedPageCount;
+    private int currentReadingPage;
+    private float currentReadingPositionOffset;
+    private float pendingRestorePositionOffset = -1f;
 
     private final List<PdfOverlayView.SearchHighlight> currentSearchHighlights = new ArrayList<>();
     private final List<SearchMatch> currentSearchMatches = new ArrayList<>();
@@ -198,6 +233,8 @@ public class PdfViewerActivity extends AppCompatActivity {
         appliedSearchCacheGeneration = SearchPreferences.getCacheClearGeneration(this);
         // 🌟 初始化轻量级进度存储
         progressPrefs = getSharedPreferences("pdf_reading_progress", MODE_PRIVATE);
+        readingControlsFeatureEnabled =
+                ReadingPreferences.isExperimentalReadingControlsEnabled(this);
 
         initViews();
         setupListeners();
@@ -218,6 +255,50 @@ public class PdfViewerActivity extends AppCompatActivity {
                 clearPdfSearch(false);
             }
         }
+        refreshExperimentalReadingControlsPreference();
+
+        // 顶部标题始终保持原版“文件名（当前页/总页数）”格式。
+        // 实验性底部阅读控制栏只影响底部 UI，不改变顶部页码进度。
+        if (!isEditMode && !isSearchMode && pdfView != null && pdfView.getPageCount() > 0) {
+            updateReadingTitle(pdfView.getCurrentPage(), pdfView.getPageCount());
+        }
+    }
+
+    private void refreshExperimentalReadingControlsPreference() {
+        boolean enabled = ReadingPreferences.isExperimentalReadingControlsEnabled(this);
+        if (enabled == readingControlsFeatureEnabled || readingControlBar == null) return;
+
+        readingControlsFeatureEnabled = enabled;
+        if (!enabled) {
+            readingControlsShown = false;
+            readingControlBar.animate().cancel();
+            readingControlBar.setVisibility(View.GONE);
+            readingControlBar.setAlpha(0f);
+            readingControlBar.setTranslationY(0f);
+
+            if (horizontalReadingMode && pdfView != null && pdfView.getPageCount() > 0) {
+                int page = Math.max(0, pdfView.getCurrentPage());
+                float offset = clamp01(pdfView.getPositionOffset());
+                horizontalReadingMode = false;
+                savedHorizontalReadingMode = false;
+                saveReadingDirection();
+                pendingRestorePositionOffset = offset;
+                readingControlsReady = false;
+                updateReadingControlStyles();
+                reloadPdfView(page);
+            } else {
+                updateReadingControlStyles();
+            }
+        } else {
+            readingControlsShown = isMenuVisible && !isEditMode && !isSearchMode;
+            if (readingControlsShown) {
+                readingControlBar.setVisibility(View.VISIBLE);
+                readingControlBar.setAlpha(readingControlsReady ? 1f : 0.78f);
+                readingControlBar.setTranslationY(0f);
+            }
+            updateReadingControlStyles();
+        }
+        updateNextVolumeButtonOffset(false);
     }
 
     private void initViews() {
@@ -227,6 +308,13 @@ public class PdfViewerActivity extends AppCompatActivity {
         annotationPanelContainer = findViewById(R.id.annotation_panel_container);
         searchPanelContainer = findViewById(R.id.search_panel_container);
         pdfContentFrame = findViewById(R.id.pdf_content_frame);
+        readingControlBar = findViewById(R.id.reading_control_bar);
+        btnReadVertical = findViewById(R.id.btn_read_vertical);
+        btnReadHorizontal = findViewById(R.id.btn_read_horizontal);
+        btnPageAnimationNone = findViewById(R.id.btn_page_animation_none);
+        btnPageAnimationEnabled = findViewById(R.id.btn_page_animation_enabled);
+        tvReadingProgress = findViewById(R.id.tv_reading_progress);
+        seekReadingProgress = findViewById(R.id.seek_reading_progress);
 
         ivBackOrExit = findViewById(R.id.iv_back_or_exit);
         tvTopTitle = findViewById(R.id.tv_top_title);
@@ -297,15 +385,22 @@ public class PdfViewerActivity extends AppCompatActivity {
             if (preloadedNextUri != null) executeLoadNextVolume();
         });
 
-        android.widget.FrameLayout contentRoot = findViewById(android.R.id.content);
-        android.widget.FrameLayout.LayoutParams params = new android.widget.FrameLayout.LayoutParams(
-                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
-                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
         );
         params.gravity = android.view.Gravity.BOTTOM | android.view.Gravity.END;
-        params.bottomMargin = 150;
-        params.rightMargin = 60;
-        contentRoot.addView(btnNextVolume, params);
+        // 保留原版胶囊较高的基础位置；底部阅读菜单出现时再额外上移。
+        params.bottomMargin = dp(50);
+        params.rightMargin = dp(20);
+        pdfContentFrame.addView(btnNextVolume, params);
+
+        updateReadingControlStyles();
+        setReadingControlsEnabled(false);
+        if (!readingControlsFeatureEnabled && readingControlBar != null) {
+            readingControlBar.setVisibility(View.GONE);
+            readingControlBar.setAlpha(0f);
+        }
 
         pdfView.getViewTreeObserver().addOnPreDrawListener(() -> {
             if (pdfView != null && pdfOverlay != null) {
@@ -365,6 +460,54 @@ public class PdfViewerActivity extends AppCompatActivity {
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
 
+        btnReadVertical.setOnClickListener(v -> switchReadingDirection(false));
+        btnReadHorizontal.setOnClickListener(v -> {
+            if (longComicMode) {
+                Toast.makeText(this, "条漫模式仅支持纵向阅读", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            switchReadingDirection(true);
+        });
+        btnPageAnimationNone.setOnClickListener(v -> setPageTurnAnimationEnabled(false));
+        btnPageAnimationEnabled.setOnClickListener(v -> setPageTurnAnimationEnabled(true));
+        seekReadingProgress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (!fromUser) return;
+                if (longComicMode) {
+                    int percent = Math.round(progress * 100f / COMIC_PROGRESS_MAX);
+                    tvReadingProgress.setText(percent + "%");
+                } else {
+                    tvReadingProgress.setText((progress + 1) + " / " + Math.max(1, loadedPageCount));
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+                readingProgressTracking = true;
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                readingProgressTracking = false;
+                if (!readingControlsReady || pdfView == null || pdfView.getPageCount() <= 0) return;
+                boolean smooth = ReadingPreferences.isPageTurnAnimationEnabled(PdfViewerActivity.this);
+                try {
+                    if (longComicMode) {
+                        float offset = seekBar.getProgress() / (float) COMIC_PROGRESS_MAX;
+                        pdfView.setPositionOffset(offset, smooth);
+                        pdfView.loadPages();
+                    } else {
+                        int page = Math.max(0, Math.min(
+                                seekBar.getProgress(), pdfView.getPageCount() - 1));
+                        pdfView.jumpTo(page, smooth);
+                    }
+                } catch (Exception ignored) {
+                    // PDF 仍在加载或视图已退出时，不让进度条操作导致崩溃。
+                }
+            }
+        });
+
         setupColorBlocks();
         setupTextInputCallback();
         setupSearchPanelListeners();
@@ -378,19 +521,51 @@ public class PdfViewerActivity extends AppCompatActivity {
     }
 
     private void updateNextVolumeButtonState() {
-        if (isAtLastPage && preloadedNextUri != null && !isEditMode && !isSearchMode) {
+        if (btnNextVolume == null) return;
+
+        boolean shouldShow = isAtLastPage
+                && preloadedNextUri != null
+                && !isEditMode
+                && !isSearchMode;
+        nextVolumeButtonTargetVisible = shouldShow;
+
+        // 横向翻页过程中 onPageChange/onPageScroll 可能交错到达。先取消旧动画，
+        // 避免“显示请求”被之前尚未结束的隐藏动画再次设为 GONE。
+        btnNextVolume.animate().cancel();
+
+        if (shouldShow) {
+            btnNextVolume.setText("下一卷：\n" + preloadedNextName + "  〉");
+            btnNextVolume.bringToFront();
+            updateNextVolumeButtonOffset(false);
+
             if (btnNextVolume.getVisibility() != View.VISIBLE) {
-                btnNextVolume.setText("下一卷：\n" + preloadedNextName + "  〉");
                 btnNextVolume.setAlpha(0f);
-                btnNextVolume.setTranslationX(150f);
+                btnNextVolume.setTranslationX(dp(50));
                 btnNextVolume.setVisibility(View.VISIBLE);
-                btnNextVolume.animate().alpha(1f).translationX(0f).setDuration(350).start();
+                btnNextVolume.animate()
+                        .alpha(1f)
+                        .translationX(0f)
+                        .setDuration(250)
+                        .start();
+            } else {
+                // 已经可见时直接恢复稳定状态，避免滚动回调反复触发动画抖动。
+                btnNextVolume.setAlpha(1f);
+                btnNextVolume.setTranslationX(0f);
             }
-        } else {
-            if (btnNextVolume.getVisibility() == View.VISIBLE) {
-                btnNextVolume.animate().alpha(0f).translationX(150f).setDuration(250)
-                        .withEndAction(() -> btnNextVolume.setVisibility(View.GONE)).start();
-            }
+            return;
+        }
+
+        if (btnNextVolume.getVisibility() == View.VISIBLE) {
+            btnNextVolume.animate()
+                    .alpha(0f)
+                    .translationX(dp(50))
+                    .setDuration(180)
+                    .withEndAction(() -> {
+                        if (!nextVolumeButtonTargetVisible) {
+                            btnNextVolume.setVisibility(View.GONE);
+                        }
+                    })
+                    .start();
         }
     }
 
@@ -452,6 +627,7 @@ public class PdfViewerActivity extends AppCompatActivity {
         if (enterSearchMode && isEditMode) return;
 
         isSearchMode = enterSearchMode;
+        updateReadingControlsVisibility();
         updateNextVolumeButtonState();
 
         if (isSearchMode) {
@@ -494,7 +670,7 @@ public class PdfViewerActivity extends AppCompatActivity {
 
             int currentPage = pdfView != null ? pdfView.getCurrentPage() : 0;
             int pageCount = pdfView != null ? pdfView.getPageCount() : 0;
-            tvTopTitle.setText(currentFileName + " (" + (currentPage + 1) + "/" + pageCount + ")");
+            updateReadingTitle(currentPage, pageCount);
             ivBackOrExit.setImageResource(android.R.drawable.ic_menu_revert);
         }
         schedulePdfViewportRelayout();
@@ -1193,8 +1369,8 @@ public class PdfViewerActivity extends AppCompatActivity {
             }
 
             tvTopTitle.setText(currentFileName);
+            initializeReadingStateForDocument();
 
-            // 🌟 读取无侵入式的历史阅读进度
             int lastReadPage = progressPrefs.getInt(pdfUri.toString(), 0);
             prepareSecurePdfAndLoad(lastReadPage, null, false);
         } else {
@@ -1335,28 +1511,22 @@ public class PdfViewerActivity extends AppCompatActivity {
                 .password(renderPassword == null || renderPassword.isEmpty() ? null : renderPassword)
                 .defaultPage(targetPageIndex)
                 .enableSwipe(true)
-                .swipeHorizontal(false)
+                .swipeHorizontal(horizontalReadingMode && !longComicMode)
 //                .scrollHandle(new DefaultScrollHandle(this))
                 .enableAntialiasing(false)
-                .pageFitPolicy(com.github.barteksc.pdfviewer.util.FitPolicy.WIDTH)
+                // 横向阅读优先完整显示整页，避免正方形、拼页漫画等被 FitPolicy.WIDTH 裁掉。
+                // spacing/autoSpacing 仍保持为 0/false，不额外制造页间距。
+                .pageFitPolicy(horizontalReadingMode && !longComicMode
+                        ? com.github.barteksc.pdfviewer.util.FitPolicy.BOTH
+                        : com.github.barteksc.pdfviewer.util.FitPolicy.WIDTH)
                 .fitEachPage(true)
+                .spacing(0)
                 .autoSpacing(false)
-                .pageSnap(false)
-                .pageFling(false)
-                .onLoad(pageCount -> Log.d("PdfOpenPerf",
-                        "Pdfium load completed in "
-                                + (System.currentTimeMillis() - pdfOpenStartedAtMs)
-                                + "ms, pages=" + pageCount))
-                .onTap(e -> {
-                    if (pdfOverlay != null && pdfOverlay.hasTextSelection()) {
-                        clearTextSelectionUi();
-                        return true;
-                    }
-                    if (!isEditMode && !isSearchMode) {
-                        toggleMenuVisibility();
-                    }
-                    return true;
-                })
+                .pageSnap(horizontalReadingMode && !longComicMode)
+                .pageFling(horizontalReadingMode
+                        && !longComicMode
+                        && ReadingPreferences.isPageTurnAnimationEnabled(this))
+                .onTap(this::handleReaderTap)
                 .onLongPress(this::handlePdfLongPress)
                 .onError(error -> {
                     DiagnosticContext.finishOperation(this, "pdf_open", false);
@@ -1379,13 +1549,21 @@ public class PdfViewerActivity extends AppCompatActivity {
                     }
                 })
                 .onPageChange((page, pageCount) -> {
-                    if (!isEditMode && !isSearchMode) {
-                        tvTopTitle.setText(currentFileName + " (" + (page + 1) + "/" + pageCount + ")");
+                    loadedPageCount = pageCount;
+                    currentReadingPage = page;
+                    updateReadingTitle(page, pageCount);
+                    if (!readingProgressTracking && !longComicMode) {
+                        updateReadingProgressUi(page, pageCount, currentReadingPositionOffset);
                     }
-                    isAtLastPage = (page == pageCount - 1);
+                    if (horizontalReadingMode && !longComicMode) {
+                        // 横向模式只以稳定的页面切换结果为准，不受滚动中的瞬时回调干扰。
+                        isAtLastPage = isHorizontalAtLastPage(pageCount);
+                    } else if (!isPhysicallyAtDocumentEnd()) {
+                        // 纵向模式沿用原版体验：只有真正无法继续向下滚动时才算到底。
+                        isAtLastPage = false;
+                    }
                     updateNextVolumeButtonState();
 
-                    // 实时静默保存用户的阅读进度
                     if (progressPrefs != null && pdfUri != null) {
                         progressPrefs.edit().putInt(pdfUri.toString(), page).apply();
                     }
@@ -1397,36 +1575,76 @@ public class PdfViewerActivity extends AppCompatActivity {
                     if (textSelectionActionMode != null) {
                         textSelectionActionMode.invalidateContentRect();
                     }
-                    // canScrollVertically(1) 用于检测 View 是否还能向下滚动
-                    // 返回 false 说明已经被死死卡在最底部了，一像素都滚不动了
-                    boolean isPhysicallyAtBottom = !pdfView.canScrollVertically(1);
-                    int pageCount = pdfView.getPageCount();
-
-                    // 如果物理触底了，但系统页码算错了（以为还没到最后）
-                    if (isPhysicallyAtBottom && !isAtLastPage) {
-                        isAtLastPage = true;
-
-                        // 1. 强制修正顶部标题的页码显示
-                        if (!isEditMode && !isSearchMode) {
-                            tvTopTitle.setText(currentFileName + " (" + pageCount + "/" + pageCount + ")");
-                        }
-
-                        // 2. 强制唤醒“下一卷”悬浮胶囊
-                        updateNextVolumeButtonState();
-
-                        // 3. 强制把阅读进度记录为 100% 完结
-                        if (progressPrefs != null && pdfUri != null) {
-                            progressPrefs.edit().putInt(pdfUri.toString(), pageCount - 1).apply();
-                        }
+                    boolean horizontalPaging = horizontalReadingMode && !longComicMode;
+                    // 横向滚动中的 page 参数可能短暂回报上一页。横向的权威页码只由
+                    // onPageChange 更新，避免已经到最后一页后又被瞬时回调改回倒数第二页。
+                    if (!horizontalPaging) {
+                        currentReadingPage = page;
                     }
-                    // 补充防御机制：如果用户往回滑，离开了物理底部，并且系统当前页码确实不是最后一页，那就隐藏胶囊
-                    else if (!isPhysicallyAtBottom && isAtLastPage && page < pageCount - 1) {
-                        isAtLastPage = false;
+                    currentReadingPositionOffset = clamp01(positionOffset);
+                    int pageCount = Math.max(1, pdfView.getPageCount());
+                    int progressPage = horizontalPaging ? currentReadingPage : page;
+                    if (!readingProgressTracking) {
+                        updateReadingProgressUi(
+                                progressPage, pageCount, currentReadingPositionOffset);
+                    }
+                    if (longComicMode) {
+                        scheduleReadingPositionSave(currentReadingPositionOffset);
+                    }
+
+                    final boolean shouldShowNext;
+                    if (horizontalPaging) {
+                        // 使用稳定页码判断，避免 onPageScroll 的瞬时上一页回调把按钮隐藏。
+                        shouldShowNext = isHorizontalAtLastPage(pageCount);
+                    } else {
+                        // 纵向/条漫模式恢复原版物理触底判断：还能下拉就不显示。
+                        shouldShowNext = !pdfView.canScrollVertically(1);
+                    }
+                    if (isAtLastPage != shouldShowNext) {
+                        isAtLastPage = shouldShowNext;
                         updateNextVolumeButtonState();
+                    }
+                    if (shouldShowNext && progressPrefs != null && pdfUri != null) {
+                        progressPrefs.edit().putInt(pdfUri.toString(), pageCount - 1).apply();
+                    }
+                    if (shouldShowNext && !horizontalReadingMode && !longComicMode) {
+                        // 某些短页 PDF 的回调页码可能没有及时跳到末页，物理触底时修正显示。
+                        updateReadingTitle(pageCount - 1, pageCount);
+                        if (!readingProgressTracking) {
+                            updateReadingProgressUi(pageCount - 1, pageCount, 1f);
+                        }
                     }
                 })
-                // =========================================================================
                 .onLoad(nbPages -> {
+                    Log.d("PdfOpenPerf", "Pdfium load completed in "
+                            + (System.currentTimeMillis() - pdfOpenStartedAtMs)
+                            + "ms, pages=" + nbPages);
+                    loadedPageCount = nbPages;
+                    currentReadingPage = Math.max(0, Math.min(targetPageIndex, nbPages - 1));
+
+                    boolean detectedLongComic = detectLongComicDocument(nbPages);
+                    if (!documentTypeKnown || longComicMode != detectedLongComic) {
+                        longComicMode = detectedLongComic;
+                        documentTypeKnown = true;
+                        saveDocumentType();
+                    }
+                    if (longComicMode && horizontalReadingMode) {
+                        horizontalReadingMode = false;
+                        savedHorizontalReadingMode = false;
+                        saveReadingDirection();
+                        pdfView.post(() -> reloadPdfView(currentReadingPage));
+                        return;
+                    }
+                    if (!longComicMode
+                            && savedHorizontalReadingMode != horizontalReadingMode) {
+                        horizontalReadingMode = savedHorizontalReadingMode;
+                        pdfView.post(() -> reloadPdfView(currentReadingPage));
+                        return;
+                    }
+                    readingControlsReady = true;
+                    setReadingControlsEnabled(true);
+                    updateReadingControlStyles();
+
                     boolean encrypted = (pdfSecurityInfo != null && pdfSecurityInfo.encrypted)
                             || (pdfPassword != null && !pdfPassword.isEmpty());
                     boolean restricted = pdfSecurityInfo != null && pdfSecurityInfo.hasRestrictions();
@@ -1441,16 +1659,318 @@ public class PdfViewerActivity extends AppCompatActivity {
                     if (pdfOverlay != null) {
                         pdfOverlay.refreshPageGeometry();
                     }
-                    if (!isEditMode && !isSearchMode) {
-                        tvTopTitle.setText(currentFileName + " (" + (targetPageIndex + 1) + "/" + nbPages + ")");
-                    }
-                    isAtLastPage = (targetPageIndex == nbPages - 1);
-                    rawModifiedTime = new SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.getDefault()).format(new Date());
+                    updateReadingTitle(currentReadingPage, nbPages);
+                    updateReadingProgressUi(
+                            currentReadingPage, nbPages, currentReadingPositionOffset);
+                    // 横向可直接按最后一页判断；纵向必须等布局完成后检查是否还能继续下拉。
+                    isAtLastPage = horizontalReadingMode && !longComicMode
+                            && isHorizontalAtLastPage(nbPages);
+                    rawModifiedTime = new SimpleDateFormat(
+                            "yyyy/MM/dd HH:mm", Locale.getDefault()).format(new Date());
 
-                    updateNextVolumeButtonState();
+                    restoreReadingPositionIfNeeded();
                     preloadNextVolumeInfo();
+                    pdfView.post(() -> {
+                        if (isFinishing() || pdfView.getPageCount() <= 0) return;
+                        isAtLastPage = horizontalReadingMode && !longComicMode
+                                ? isHorizontalAtLastPage(pdfView.getPageCount())
+                                : !pdfView.canScrollVertically(1);
+                        updateNextVolumeButtonState();
+                    });
                 })
                 .load();
+    }
+
+    private void initializeReadingStateForDocument() {
+        readingControlsReady = false;
+        loadedPageCount = 0;
+        currentReadingPage = 0;
+        currentReadingPositionOffset = 0f;
+        longComicMode = false;
+        horizontalReadingMode = false;
+        savedHorizontalReadingMode = false;
+        documentTypeKnown = false;
+        pendingRestorePositionOffset = 0f;
+        readingControlsFeatureEnabled =
+                ReadingPreferences.isExperimentalReadingControlsEnabled(this);
+        isMenuVisible = true;
+        readingControlsShown = readingControlsFeatureEnabled;
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+        if (topMenuLayout != null) {
+            topMenuLayout.animate().cancel();
+            topMenuLayout.setTranslationY(0f);
+            topMenuLayout.setVisibility(View.VISIBLE);
+        }
+        if (readingControlBar != null) {
+            readingControlBar.animate().cancel();
+            readingControlBar.setTranslationY(0f);
+            if (readingControlsFeatureEnabled) {
+                readingControlBar.setVisibility(View.VISIBLE);
+                readingControlBar.setAlpha(0.78f);
+            } else {
+                readingControlBar.setVisibility(View.GONE);
+                readingControlBar.setAlpha(0f);
+            }
+        }
+        updateNextVolumeButtonOffset(false);
+
+        if (progressPrefs == null || pdfUri == null) {
+            updateReadingControlStyles();
+            setReadingControlsEnabled(false);
+            return;
+        }
+        String type = progressPrefs.getString(readingTypeKey(), "");
+        if (TYPE_LONG_COMIC.equals(type)) {
+            longComicMode = true;
+            documentTypeKnown = true;
+        } else if (TYPE_NORMAL.equals(type)) {
+            documentTypeKnown = true;
+        }
+        savedHorizontalReadingMode = readingControlsFeatureEnabled
+                && progressPrefs.getBoolean(readingModeKey(), false);
+        horizontalReadingMode = readingControlsFeatureEnabled
+                && documentTypeKnown
+                && !longComicMode
+                && savedHorizontalReadingMode;
+        pendingRestorePositionOffset = progressPrefs.getFloat(readingOffsetKey(), 0f);
+        updateReadingControlStyles();
+        setReadingControlsEnabled(false);
+    }
+
+    private void switchReadingDirection(boolean horizontal) {
+        if (!readingControlsFeatureEnabled
+                || !readingControlsReady
+                || pdfView == null
+                || pdfView.getPageCount() <= 0) return;
+        if (horizontal && longComicMode) {
+            Toast.makeText(this, "条漫模式仅支持纵向阅读", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (horizontalReadingMode == horizontal) return;
+
+        int page = Math.max(0, pdfView.getCurrentPage());
+        float offset = clamp01(pdfView.getPositionOffset());
+        horizontalReadingMode = horizontal;
+        savedHorizontalReadingMode = horizontal;
+        saveReadingDirection();
+        pendingRestorePositionOffset = horizontal ? -1f : offset;
+        readingControlsReady = false;
+        setReadingControlsEnabled(false);
+        updateReadingControlStyles();
+        reloadPdfView(page);
+    }
+
+    private boolean detectLongComicDocument(int pageCount) {
+        if (pdfView == null || pageCount <= 0) return false;
+        int sampleCount = Math.min(pageCount, 12);
+        int validSamples = 0;
+        int tallPages = 0;
+        int extremePages = 0;
+        float singlePageRatio = 0f;
+        for (int sample = 0; sample < sampleCount; sample++) {
+            int pageIndex = sampleCount == 1
+                    ? 0
+                    : Math.round(sample * (pageCount - 1f) / (sampleCount - 1f));
+            SizeF size;
+            try {
+                size = pdfView.getPageSize(pageIndex);
+            } catch (Exception ignored) {
+                continue;
+            }
+            if (size == null || size.getWidth() <= 0f || size.getHeight() <= 0f) continue;
+            validSamples++;
+            float ratio = size.getHeight() / size.getWidth();
+            singlePageRatio = ratio;
+            if (ratio >= LONG_COMIC_PAGE_RATIO) tallPages++;
+            if (ratio >= 5f) extremePages++;
+        }
+        if (validSamples == 0) {
+            // 页面尺寸尚未准备好时沿用已保存的分类，避免模式来回跳变。
+            return documentTypeKnown && longComicMode;
+        }
+        if (pageCount == 1) {
+            return singlePageRatio >= SINGLE_PAGE_LONG_COMIC_RATIO;
+        }
+        int requiredTallPages = Math.max(2, (int) Math.ceil(validSamples * 0.7f));
+        int requiredExtremePages = Math.max(2, (int) Math.ceil(validSamples * 0.4f));
+        return tallPages >= requiredTallPages || extremePages >= requiredExtremePages;
+    }
+
+    private void updateReadingControlsVisibility() {
+        if (readingControlBar == null) return;
+        if (isEditMode || isSearchMode || !readingControlsFeatureEnabled) {
+            readingControlsShown = false;
+        }
+        boolean shouldShow = readingControlsFeatureEnabled
+                && readingControlsShown
+                && !isEditMode
+                && !isSearchMode;
+        if (!shouldShow) {
+            readingControlBar.animate().cancel();
+            readingControlBar.setVisibility(View.GONE);
+            readingControlBar.setAlpha(0f);
+            readingControlBar.setTranslationY(0f);
+        }
+        updateNextVolumeButtonOffset(false);
+    }
+
+    private void setReadingControlsEnabled(boolean enabled) {
+        readingControlsReady = enabled;
+        if (btnReadVertical != null) btnReadVertical.setEnabled(enabled);
+        if (btnReadHorizontal != null) btnReadHorizontal.setEnabled(enabled);
+        if (btnPageAnimationNone != null) btnPageAnimationNone.setEnabled(enabled);
+        if (btnPageAnimationEnabled != null) btnPageAnimationEnabled.setEnabled(enabled);
+        if (seekReadingProgress != null) seekReadingProgress.setEnabled(enabled);
+        if (readingControlBar != null && readingControlBar.getVisibility() == View.VISIBLE) {
+            readingControlBar.setAlpha(enabled ? 1f : 0.78f);
+        }
+    }
+
+    private void updateReadingControlStyles() {
+        if (btnReadVertical == null || btnReadHorizontal == null) return;
+        styleReadingModeButton(btnReadVertical, !horizontalReadingMode, false);
+        styleReadingModeButton(
+                btnReadHorizontal, horizontalReadingMode && !longComicMode, longComicMode);
+        btnReadHorizontal.setContentDescription(
+                longComicMode ? "横向翻页，条漫模式不可用" : "切换为横向翻页");
+
+        boolean animationEnabled = ReadingPreferences.isPageTurnAnimationEnabled(this);
+        if (btnPageAnimationNone != null) {
+            styleReadingModeButton(btnPageAnimationNone, !animationEnabled, false);
+        }
+        if (btnPageAnimationEnabled != null) {
+            styleReadingModeButton(btnPageAnimationEnabled, animationEnabled, false);
+        }
+    }
+
+    private void setPageTurnAnimationEnabled(boolean enabled) {
+        ReadingPreferences.setPageTurnAnimationEnabled(this, enabled);
+        updateReadingControlStyles();
+        Toast.makeText(
+                this,
+                enabled ? "已开启翻页动画" : "已关闭翻页动画",
+                Toast.LENGTH_SHORT
+        ).show();
+    }
+
+    private void styleReadingModeButton(TextView button, boolean selected, boolean blocked) {
+        GradientDrawable background = new GradientDrawable();
+        background.setCornerRadius(dp(17));
+        background.setColor(selected ? 0xFF03A9F4 : 0x22FFFFFF);
+        if (!selected) {
+            background.setStroke(dp(1), 0x33FFFFFF);
+        }
+        button.setBackground(background);
+        button.setTextColor(blocked ? 0xFF9CA3AF : 0xFFFFFFFF);
+        button.setAlpha(blocked ? 0.45f : 1f);
+        button.setTypeface(null, selected
+                ? android.graphics.Typeface.BOLD
+                : android.graphics.Typeface.NORMAL);
+    }
+
+    private void updateReadingTitle(int page, int pageCount) {
+        if (isEditMode || isSearchMode || tvTopTitle == null) return;
+        int safeCount = Math.max(1, pageCount);
+        int safePage = Math.max(0, Math.min(page, safeCount - 1));
+        tvTopTitle.setText(currentFileName + " (" + (safePage + 1) + "/"
+                + safeCount + ")");
+    }
+
+    private void updateReadingProgressUi(int page, int pageCount, float positionOffset) {
+        if (seekReadingProgress == null || tvReadingProgress == null || readingProgressTracking) {
+            return;
+        }
+        if (longComicMode) {
+            int progress = Math.round(clamp01(positionOffset) * COMIC_PROGRESS_MAX);
+            seekReadingProgress.setMax(COMIC_PROGRESS_MAX);
+            seekReadingProgress.setProgress(progress);
+            tvReadingProgress.setText(Math.round(progress * 100f / COMIC_PROGRESS_MAX) + "%");
+        } else {
+            int safeCount = Math.max(1, pageCount);
+            int safePage = Math.max(0, Math.min(page, safeCount - 1));
+            seekReadingProgress.setMax(Math.max(0, safeCount - 1));
+            seekReadingProgress.setProgress(safePage);
+            tvReadingProgress.setText((safePage + 1) + " / " + safeCount);
+        }
+    }
+
+    private boolean isPhysicallyAtDocumentEnd() {
+        if (pdfView == null || pdfView.getPageCount() <= 0) return false;
+        return horizontalReadingMode && !longComicMode
+                ? isHorizontalAtLastPage(pdfView.getPageCount())
+                : !pdfView.canScrollVertically(1);
+    }
+
+    private boolean isHorizontalAtLastPage(int pageCount) {
+        if (!horizontalReadingMode || longComicMode || pageCount <= 0) return false;
+
+        int observedPage = currentReadingPage;
+        if (pdfView != null) {
+            observedPage = Math.max(observedPage, pdfView.getCurrentPage());
+        }
+        return observedPage >= pageCount - 1;
+    }
+
+    private void restoreReadingPositionIfNeeded() {
+        if (pdfView == null || pendingRestorePositionOffset < 0f
+                || horizontalReadingMode || pdfView.getPageCount() <= 0) {
+            pendingRestorePositionOffset = -1f;
+            return;
+        }
+        final float restoreOffset = clamp01(pendingRestorePositionOffset);
+        pendingRestorePositionOffset = -1f;
+        pdfView.post(() -> {
+            if (isFinishing() || pdfView.getPageCount() <= 0) return;
+            try {
+                pdfView.setPositionOffset(restoreOffset, false);
+                pdfView.loadPages();
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
+    private void scheduleReadingPositionSave(float offset) {
+        if (progressPrefs == null || pdfUri == null) return;
+        if (pendingReadingProgressSave != null) {
+            readingProgressHandler.removeCallbacks(pendingReadingProgressSave);
+        }
+        final String key = readingOffsetKey();
+        final float safeOffset = clamp01(offset);
+        pendingReadingProgressSave = () -> {
+            if (progressPrefs != null) {
+                progressPrefs.edit().putFloat(key, safeOffset).apply();
+            }
+        };
+        readingProgressHandler.postDelayed(pendingReadingProgressSave, 350L);
+    }
+
+    private void saveReadingDirection() {
+        if (progressPrefs != null && pdfUri != null) {
+            progressPrefs.edit().putBoolean(readingModeKey(), savedHorizontalReadingMode).apply();
+        }
+    }
+
+    private void saveDocumentType() {
+        if (progressPrefs != null && pdfUri != null) {
+            progressPrefs.edit().putString(
+                    readingTypeKey(), longComicMode ? TYPE_LONG_COMIC : TYPE_NORMAL).apply();
+        }
+    }
+
+    private String readingModeKey() {
+        return "reading_mode_horizontal:" + (pdfUri == null ? "" : pdfUri.toString());
+    }
+
+    private String readingTypeKey() {
+        return "reading_document_type:" + (pdfUri == null ? "" : pdfUri.toString());
+    }
+
+    private String readingOffsetKey() {
+        return "reading_position_offset:" + (pdfUri == null ? "" : pdfUri.toString());
+    }
+
+    private static float clamp01(float value) {
+        return Math.max(0f, Math.min(1f, value));
     }
 
     private void preloadNextVolumeInfo() {
@@ -1458,77 +1978,131 @@ public class PdfViewerActivity extends AppCompatActivity {
         preloadedNextPath = "";
         preloadedNextName = "";
 
+        final Uri sourceUri = pdfUri;
+        final String sourceName = (pdfName == null || pdfName.trim().isEmpty())
+                ? currentFileName : pdfName;
+        final String sourcePath = pdfPath;
+        final String sourceParentUri = parentUriStr;
+
         new Thread(() -> {
+            Uri resolvedUri = null;
+            String resolvedPath = "";
+            String resolvedName = "";
+            List<String> siblings = new ArrayList<>();
+
             try {
-                List<String> siblings = new ArrayList<>();
-
-                if (parentUriStr != null && !parentUriStr.isEmpty()) {
-                    DocumentFile folder = DocumentFile.fromTreeUri(this, Uri.parse(parentUriStr));
-                    if (folder != null && folder.exists()) {
-                        for (DocumentFile f : folder.listFiles()) {
-                            if (!f.isDirectory() && f.getName() != null && f.getName().toLowerCase().endsWith(".pdf")) {
-                                siblings.add(f.getName());
+                DocumentFile treeFolder = null;
+                if (sourceParentUri != null && !sourceParentUri.isEmpty()) {
+                    treeFolder = DocumentFile.fromTreeUri(
+                            this, Uri.parse(sourceParentUri));
+                    if (treeFolder != null && treeFolder.exists()) {
+                        for (DocumentFile file : treeFolder.listFiles()) {
+                            String name = file.getName();
+                            if (!file.isDirectory()
+                                    && name != null
+                                    && name.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
+                                siblings.add(name);
                             }
                         }
                     }
                 }
-                else if (pdfPath != null && !pdfPath.isEmpty()) {
-                    File currentFile = new File(pdfPath);
-                    File parentDir = currentFile.getParentFile();
-                    if (parentDir != null && parentDir.exists() && parentDir.isDirectory()) {
-                        File[] files = parentDir.listFiles();
+
+                // SAF 树 URI 失效、权限被收回或目录为空时，继续尝试文件系统路径，
+                // 不让一个不可用的 parentUriStr 阻断原本可用的下一卷识别。
+                File localParent = null;
+                if (sourcePath != null && !sourcePath.isEmpty()) {
+                    File currentFile = new File(sourcePath);
+                    localParent = currentFile.getParentFile();
+                    if (siblings.isEmpty()
+                            && localParent != null
+                            && localParent.exists()
+                            && localParent.isDirectory()) {
+                        File[] files = localParent.listFiles();
                         if (files != null) {
-                            for (File f : files) {
-                                if (f.getName().toLowerCase().endsWith(".pdf")) {
-                                    siblings.add(f.getName());
+                            for (File file : files) {
+                                if (file.isFile()
+                                        && file.getName().toLowerCase(Locale.ROOT)
+                                        .endsWith(".pdf")) {
+                                    siblings.add(file.getName());
                                 }
                             }
                         }
                     }
                 }
 
-                String nextFileName = SmartVolumeSniffer.findNextVolume(pdfName, siblings);
-
+                String nextFileName =
+                        SmartVolumeSniffer.findNextVolume(sourceName, siblings);
                 if (nextFileName != null) {
-                    if (parentUriStr != null && !parentUriStr.isEmpty()) {
-                        DocumentFile folder = DocumentFile.fromTreeUri(this, Uri.parse(parentUriStr));
-                        if (folder != null) {
-                            for (DocumentFile f : folder.listFiles()) {
-                                if (nextFileName.equals(f.getName())) {
-                                    preloadedNextUri = f.getUri();
-                                    preloadedNextPath = MainActivity.cleanPath(preloadedNextUri.getPath());
-                                    preloadedNextName = nextFileName;
-                                    break;
-                                }
+                    if (treeFolder != null) {
+                        for (DocumentFile file : treeFolder.listFiles()) {
+                            if (nextFileName.equals(file.getName())) {
+                                resolvedUri = file.getUri();
+                                resolvedPath = MainActivity.cleanPath(
+                                        resolvedUri.getPath());
+                                resolvedName = nextFileName;
+                                break;
                             }
                         }
-                    } else {
-                        File nextFile = new File(new File(pdfPath).getParentFile(), nextFileName);
+                    }
+
+                    if (resolvedUri == null && localParent != null) {
+                        File nextFile = new File(localParent, nextFileName);
                         if (nextFile.exists()) {
-                            preloadedNextUri = Uri.fromFile(nextFile);
-                            preloadedNextPath = nextFile.getAbsolutePath();
-                            preloadedNextName = nextFileName;
+                            resolvedUri = Uri.fromFile(nextFile);
+                            resolvedPath = nextFile.getAbsolutePath();
+                            resolvedName = nextFileName;
                         }
                     }
                 }
 
-                runOnUiThread(this::updateNextVolumeButtonState);
-
-            } catch (Exception e) {
-                e.printStackTrace();
+                Log.d("NextVolume", "current=" + sourceName
+                        + ", siblings=" + siblings.size()
+                        + ", next=" + resolvedName
+                        + ", resolved=" + (resolvedUri != null));
+            } catch (Exception error) {
+                Log.w("NextVolume", "下一卷预加载失败", error);
             }
-        }).start();
+
+            final Uri finalResolvedUri = resolvedUri;
+            final String finalResolvedPath = resolvedPath;
+            final String finalResolvedName = resolvedName;
+            runOnUiThread(() -> {
+                if (isFinishing()) return;
+                // 异步扫描完成时若用户已经切换了文件，丢弃旧文件的扫描结果。
+                if (sourceUri != null && pdfUri != null && !sourceUri.equals(pdfUri)) {
+                    return;
+                }
+                preloadedNextUri = finalResolvedUri;
+                preloadedNextPath = finalResolvedPath;
+                preloadedNextName = finalResolvedName;
+                updateNextVolumeButtonState();
+            });
+        }, "next-volume-preload").start();
     }
 
     private void executeLoadNextVolume() {
+        nextVolumeButtonTargetVisible = false;
+        btnNextVolume.animate().cancel();
         btnNextVolume.setVisibility(View.GONE);
         Toast.makeText(this, "正在无缝加载: " + preloadedNextName, Toast.LENGTH_SHORT).show();
 
         deleteUnlockedPdfTemp();
+        boolean inheritHorizontalMode = readingControlsFeatureEnabled
+                && horizontalReadingMode
+                && !longComicMode;
+
         pdfPath = preloadedNextPath;
         pdfName = preloadedNextName;
         pdfUri = preloadedNextUri;
         workingPdfUri = null;
+
+        // “下一卷”属于连续阅读：将当前翻页方向写入新文档的本地偏好，
+        // 避免横向阅读进入下一卷后又回到默认纵向。
+        if (progressPrefs != null && pdfUri != null) {
+            progressPrefs.edit()
+                    .putBoolean(readingModeKey(), inheritHorizontalMode)
+                    .apply();
+        }
         pdfPassword = "";
         pdfSecurityInfo = null;
         securityInspectionRunning = false;
@@ -1552,8 +2126,8 @@ public class PdfViewerActivity extends AppCompatActivity {
             pdfOverlay.clearActions();
         }
 
-
-        // 🌟 连卷时，不要读历史进度，强制从 0 (第1页) 开始看新的一卷！
+        initializeReadingStateForDocument();
+        pendingRestorePositionOffset = 0f;
         prepareSecurePdfAndLoad(0, null, false);
     }
 
@@ -1572,6 +2146,7 @@ public class PdfViewerActivity extends AppCompatActivity {
         }
         isEditMode = enterEdit;
 
+        updateReadingControlsVisibility();
         updateNextVolumeButtonState();
 
         if (isEditMode) {
@@ -1595,7 +2170,7 @@ public class PdfViewerActivity extends AppCompatActivity {
         } else {
             int currentPage = pdfView.getCurrentPage();
             int pageCount = pdfView.getPageCount();
-            tvTopTitle.setText(currentFileName + " (" + (currentPage + 1) + "/" + pageCount + ")");
+            updateReadingTitle(currentPage, pageCount);
             ivBackOrExit.setImageResource(android.R.drawable.ic_menu_revert);
 
             ivUndo.setVisibility(View.GONE);
@@ -2042,26 +2617,135 @@ public class PdfViewerActivity extends AppCompatActivity {
         return message == null || message.trim().isEmpty() ? "未知错误" : message;
     }
 
+    private boolean handleReaderTap(MotionEvent event) {
+        if (pdfOverlay != null && pdfOverlay.hasTextSelection()) {
+            clearTextSelectionUi();
+            return true;
+        }
+        if (isEditMode || isSearchMode) return true;
+
+        if (horizontalReadingMode && !longComicMode && pdfView != null) {
+            float width = Math.max(1f, pdfView.getWidth());
+            float x = event == null ? width / 2f : event.getX();
+            if (x < width / 3f) {
+                turnHorizontalPage(-1);
+                return true;
+            }
+            if (x > width * 2f / 3f) {
+                turnHorizontalPage(1);
+                return true;
+            }
+        }
+
+        toggleMenuVisibility();
+        return true;
+    }
+
+    private void turnHorizontalPage(int direction) {
+        if (pdfView == null || pdfView.getPageCount() <= 0 || direction == 0) return;
+        int current = Math.max(0, pdfView.getCurrentPage());
+        int target = Math.max(0, Math.min(current + direction, pdfView.getPageCount() - 1));
+        if (target == current) return;
+        boolean smooth = ReadingPreferences.isPageTurnAnimationEnabled(this);
+        try {
+            pdfView.jumpTo(target, smooth);
+        } catch (Exception ignored) {
+            // 页面仍在加载或 Activity 已退出时忽略本次点击。
+        }
+    }
+
+    private void updateNextVolumeButtonOffset(boolean animate) {
+        if (btnNextVolume == null) return;
+        Runnable update = () -> {
+            float target = 0f;
+            if (readingControlsShown
+                    && readingControlBar != null
+                    && readingControlBar.getVisibility() == View.VISIBLE) {
+                target = -(readingControlBar.getHeight() + dp(12));
+            }
+            btnNextVolume.animate().cancel();
+            if (animate) {
+                btnNextVolume.animate().translationY(target).setDuration(220).start();
+            } else {
+                btnNextVolume.setTranslationY(target);
+            }
+        };
+        if (readingControlBar != null && readingControlBar.getHeight() == 0
+                && readingControlsShown) {
+            readingControlBar.post(update);
+        } else {
+            update.run();
+        }
+    }
+
     private void toggleMenuVisibility() {
         if (isEditMode || isSearchMode) return;
-        isMenuVisible = !isMenuVisible;
-
         if (isMenuVisible) {
-            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
-
-            topMenuLayout.setVisibility(View.VISIBLE);
-            topMenuLayout.setTranslationY(-topMenuLayout.getHeight());
-            topMenuLayout.animate().translationY(0).setDuration(250).start();
+            hideReaderChrome();
         } else {
-            getWindow().getDecorView().setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            );
-
-            topMenuLayout.animate().translationY(-topMenuLayout.getHeight()).setDuration(250)
-                    .withEndAction(() -> topMenuLayout.setVisibility(View.GONE)).start();
+            showReaderChrome();
         }
+    }
+
+    private void showReaderChrome() {
+        if (isEditMode || isSearchMode) return;
+        isMenuVisible = true;
+        readingControlsShown = readingControlsFeatureEnabled;
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+
+        topMenuLayout.animate().cancel();
+        topMenuLayout.setVisibility(View.VISIBLE);
+        if (topMenuLayout.getTranslationY() != 0f) {
+            topMenuLayout.animate().translationY(0f).setDuration(220).start();
+        }
+
+        if (readingControlBar != null) {
+            readingControlBar.animate().cancel();
+            if (readingControlsFeatureEnabled) {
+                readingControlBar.setVisibility(View.VISIBLE);
+                readingControlBar.setAlpha(0f);
+                readingControlBar.setTranslationY(dp(96));
+                readingControlBar.animate()
+                        .alpha(readingControlsReady ? 1f : 0.78f)
+                        .translationY(0f)
+                        .setDuration(220)
+                        .start();
+                readingControlBar.post(() -> updateNextVolumeButtonOffset(true));
+            } else {
+                readingControlBar.setVisibility(View.GONE);
+                readingControlBar.setAlpha(0f);
+                readingControlBar.setTranslationY(0f);
+                updateNextVolumeButtonOffset(true);
+            }
+        }
+    }
+
+    private void hideReaderChrome() {
+        isMenuVisible = false;
+        readingControlsShown = false;
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        );
+
+        topMenuLayout.animate().cancel();
+        topMenuLayout.animate().translationY(-topMenuLayout.getHeight()).setDuration(220)
+                .withEndAction(() -> topMenuLayout.setVisibility(View.GONE)).start();
+
+        if (readingControlBar != null && readingControlBar.getVisibility() == View.VISIBLE) {
+            readingControlBar.animate().cancel();
+            readingControlBar.animate()
+                    .alpha(0f)
+                    .translationY(dp(96))
+                    .setDuration(200)
+                    .withEndAction(() -> {
+                        readingControlBar.setVisibility(View.GONE);
+                        readingControlBar.setTranslationY(0f);
+                    })
+                    .start();
+        }
+        updateNextVolumeButtonOffset(true);
     }
 
     private void showMainMenu(View anchor) {
@@ -2145,6 +2829,10 @@ public class PdfViewerActivity extends AppCompatActivity {
         if (pdfSearchManager != null) {
             pdfSearchManager.close();
             pdfSearchManager = null;
+        }
+        if (pendingReadingProgressSave != null) {
+            readingProgressHandler.removeCallbacks(pendingReadingProgressSave);
+            pendingReadingProgressSave = null;
         }
         deleteUnlockedPdfTemp();
         super.onDestroy();
