@@ -1588,7 +1588,10 @@ public class PdfViewerActivity extends AppCompatActivity {
                         updateReadingProgressUi(
                                 progressPage, pageCount, currentReadingPositionOffset);
                     }
-                    if (longComicMode) {
+                    if (!horizontalPaging) {
+                        // 纵向普通 PDF 与条漫都保存文档级滚动位置。1.0.1 只保存条漫
+                        // offset，随后默认的 0 又会覆盖 defaultPage，导致普通 PDF
+                        // 看起来无法恢复上次阅读位置。
                         scheduleReadingPositionSave(currentReadingPositionOffset);
                     }
 
@@ -1690,7 +1693,7 @@ public class PdfViewerActivity extends AppCompatActivity {
         horizontalReadingMode = false;
         savedHorizontalReadingMode = false;
         documentTypeKnown = false;
-        pendingRestorePositionOffset = 0f;
+        pendingRestorePositionOffset = -1f;
         readingControlsFeatureEnabled =
                 ReadingPreferences.isExperimentalReadingControlsEnabled(this);
         isMenuVisible = true;
@@ -1732,7 +1735,9 @@ public class PdfViewerActivity extends AppCompatActivity {
                 && documentTypeKnown
                 && !longComicMode
                 && savedHorizontalReadingMode;
-        pendingRestorePositionOffset = progressPrefs.getFloat(readingOffsetKey(), 0f);
+        pendingRestorePositionOffset = progressPrefs.contains(readingOffsetKey())
+                ? progressPrefs.getFloat(readingOffsetKey(), -1f)
+                : -1f;
         updateReadingControlStyles();
         setReadingControlsEnabled(false);
     }
@@ -1944,6 +1949,28 @@ public class PdfViewerActivity extends AppCompatActivity {
         readingProgressHandler.postDelayed(pendingReadingProgressSave, 350L);
     }
 
+    private void saveCurrentReadingProgressImmediately() {
+        if (progressPrefs == null || pdfUri == null || pdfView == null
+                || pdfView.getPageCount() <= 0) return;
+
+        int pageCount = pdfView.getPageCount();
+        int page = Math.max(0, Math.min(pdfView.getCurrentPage(), pageCount - 1));
+        SharedPreferences.Editor editor = progressPrefs.edit()
+                .putInt(pdfUri.toString(), page);
+
+        // 横向是离散单页阅读，页码足够恢复；纵向需要额外保存整个文档的
+        // positionOffset，才能恢复到页面内部的大致滚动位置。
+        if (!(horizontalReadingMode && !longComicMode)) {
+            editor.putFloat(readingOffsetKey(), clamp01(pdfView.getPositionOffset()));
+        }
+        editor.apply();
+
+        if (pendingReadingProgressSave != null) {
+            readingProgressHandler.removeCallbacks(pendingReadingProgressSave);
+            pendingReadingProgressSave = null;
+        }
+    }
+
     private void saveReadingDirection() {
         if (progressPrefs != null && pdfUri != null) {
             progressPrefs.edit().putBoolean(readingModeKey(), savedHorizontalReadingMode).apply();
@@ -2127,7 +2154,7 @@ public class PdfViewerActivity extends AppCompatActivity {
         }
 
         initializeReadingStateForDocument();
-        pendingRestorePositionOffset = 0f;
+        pendingRestorePositionOffset = -1f;
         prepareSecurePdfAndLoad(0, null, false);
     }
 
@@ -2817,7 +2844,16 @@ public class PdfViewerActivity extends AppCompatActivity {
         Toast.makeText(this, isNowFav ? "已加入收藏夹" : "已取消收藏", Toast.LENGTH_SHORT).show();
     }
     @Override
+    protected void onPause() {
+        // Activity 进入后台、被其他应用覆盖或用户返回首页时立即落盘，
+        // 不依赖 350 ms 防抖任务是否来得及执行。
+        saveCurrentReadingProgressImmediately();
+        super.onPause();
+    }
+
+    @Override
     protected void onDestroy() {
+        saveCurrentReadingProgressImmediately();
         if (textSelectionActionMode != null) {
             textSelectionActionMode.finish();
             textSelectionActionMode = null;

@@ -50,7 +50,9 @@ public final class DiagnosticContext {
 
     public static void initializeSession(Context context) {
         Context appContext = context.getApplicationContext();
-        remoteSyncEnabled = CrashReportingManager.isEnabled(appContext);
+        remoteSyncEnabled = ProcessName.isMainProcess()
+                && CrashReportingManager.isEnabled(appContext)
+                && CrashReportingManager.ensureFirebaseReady(appContext);
         put(appContext, "app_process", ProcessName.current());
         put(appContext, "build_type", BuildConfig.DEBUG ? "debug" : "release");
         put(appContext, "app_abi", Build.SUPPORTED_ABIS.length == 0
@@ -189,7 +191,9 @@ public final class DiagnosticContext {
     }
 
     public static void syncToCrashlytics(Context context) {
-        if (!CrashReportingManager.isEnabled(context)) return;
+        if (!ProcessName.isMainProcess()
+                || !CrashReportingManager.isEnabled(context)
+                || !CrashReportingManager.ensureFirebaseReady(context)) return;
         remoteSyncEnabled = true;
         SharedPreferences preferences = prefs(context);
         FirebaseCrashlytics crashlytics = FirebaseCrashlytics.getInstance();
